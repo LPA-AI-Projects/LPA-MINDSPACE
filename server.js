@@ -1,8 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distPath = path.join(__dirname, 'dist');
 
 const app = express();
 app.use(cors());
@@ -45,6 +51,17 @@ app.post('/api/generate-board', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// Production: serve Vite build (same origin as /api for AI proxy)
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get(/^(?!\/api\/).*/, (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    res.sendFile(path.join(distPath, 'index.html'), (err) => {
+      if (err) next(err);
+    });
+  });
+}
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {

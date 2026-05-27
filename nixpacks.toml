@@ -1,0 +1,12 @@
+# Railway / Nixpacks — avoid EBUSY on node_modules/.vite during npm ci
+[phases.install]
+cmds = [
+  "rm -rf node_modules node_modules/.vite .vite 2>/dev/null || true",
+  "npm ci",
+]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"

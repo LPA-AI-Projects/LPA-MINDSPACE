@@ -4652,7 +4652,7 @@ Current board has ${state.objects.length} existing objects — new content must 
 
     showAiLoading('Generating your board…');
 
-    const response = await fetch('http://localhost:3001/api/generate-board', {
+    const response = await fetch('/api/generate-board', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -4849,7 +4849,7 @@ User request: "${prompt}"
 
 Replace or modify the selected objects according to the request. Keep them in roughly the same position.`;
 
-    const resp = await fetch('http://localhost:3001/api/generate-board', {
+    const resp = await fetch('/api/generate-board', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

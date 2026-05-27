@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.env
+.env.*
+!.env.example
+*.log
+.vite
+**/.vite
+node_modules/.vite
+.DS_Store
+coverage
+.cursor

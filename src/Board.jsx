@@ -107,7 +107,8 @@ export default function Board({ session }) {
     if (!boardLoaded) return;
 
     const script = document.createElement('script');
-    script.src = '/board_vanilla.js';
+    const buildId = import.meta.env.VITE_BUILD_ID || '';
+    script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
     document.body.appendChild(script);
 
     return () => { 

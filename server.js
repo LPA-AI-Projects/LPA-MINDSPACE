@@ -12,7 +12,15 @@ const distPath = path.join(__dirname, 'dist');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
+    hasDist: fs.existsSync(distPath),
+  });
+});
 
 app.post('/api/generate-board', async (req, res) => {
   try {
@@ -54,7 +62,15 @@ app.post('/api/generate-board', async (req, res) => {
 
 // Production: serve Vite build (same origin as /api for AI proxy)
 if (fs.existsSync(distPath)) {
-  app.use(express.static(distPath));
+  app.use(
+    express.static(distPath, {
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('board_vanilla.js')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }),
+  );
   app.get(/^(?!\/api\/).*/, (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     res.sendFile(path.join(distPath, 'index.html'), (err) => {
@@ -63,9 +79,11 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-const PORT = process.env.PORT || 3001;
-const server = app.listen(PORT, () => {
-  console.log(`Backend server running on http://localhost:${PORT}`);
+const PORT = Number(process.env.PORT) || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Server listening on http://${HOST}:${PORT}`);
+  if (fs.existsSync(distPath)) console.log('Serving static files from dist/');
 });
 
 // Keep the HTTP server referenced so Node doesn't auto-exit.

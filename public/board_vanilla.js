@@ -4546,6 +4546,31 @@ function ctxAction(action) {
 // AI GENERATION — STEP 9
 // ═══════════════════════════════════════════════════
 
+/** Same-origin API in production; never use localhost on a public HTTPS site. */
+function getApiBase() {
+  if (typeof window !== 'undefined' && window.__LPA_API_BASE__ != null) {
+    return String(window.__LPA_API_BASE__);
+  }
+  return '';
+}
+
+async function postGenerateBoard(body) {
+  const url = `${getApiBase()}/api/generate-board`;
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    const hint =
+      url.includes('localhost') || url.includes('127.0.0.1')
+        ? ' Hard-refresh the page (Ctrl+Shift+R) — an old script may still call localhost.'
+        : ' Check that Railway is running "npm start" and ANTHROPIC_API_KEY is set.';
+    throw new Error((err.message || 'Failed to fetch') + hint);
+  }
+}
+
 // ── Quick prompt chips
 function setAiPrompt(text) {
   document.getElementById('ai-input').value = text;
@@ -4652,15 +4677,9 @@ Current board has ${state.objects.length} existing objects — new content must 
 
     showAiLoading('Generating your board…');
 
-    const response = await fetch('/api/generate-board', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        systemPrompt: systemPrompt,
-        userMsg: userMsg
-      })
+    const response = await postGenerateBoard({
+      systemPrompt: systemPrompt,
+      userMsg: userMsg,
     });
 
     if (!response.ok) {
@@ -4849,15 +4868,9 @@ User request: "${prompt}"
 
 Replace or modify the selected objects according to the request. Keep them in roughly the same position.`;
 
-    const resp = await fetch('/api/generate-board', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        systemPrompt: sysPrompt,
-        userMsg: userMsg
-      }),
+    const resp = await postGenerateBoard({
+      systemPrompt: sysPrompt,
+      userMsg: userMsg,
     });
 
     if (!resp.ok) throw new Error('API error ' + resp.status);

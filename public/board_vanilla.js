@@ -4684,7 +4684,12 @@ Current board has ${state.objects.length} existing objects — new content must 
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || 'API error ' + response.status);
+      const msg =
+        err.error ||
+        (response.status === 404
+          ? 'API route not found — is the server running npm start?'
+          : `Server error ${response.status}`);
+      throw new Error(msg);
     }
 
     const data = await response.json();
@@ -4873,7 +4878,10 @@ Replace or modify the selected objects according to the request. Keep them in ro
       userMsg: userMsg,
     });
 
-    if (!resp.ok) throw new Error('API error ' + resp.status);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || `Server error ${resp.status}`);
+    }
     const data = await resp.json();
     const raw  = data.content[0]?.text || '';
     const clean = raw.replace(/^```json\s*/,'').replace(/```\s*$/,'').trim();

@@ -10,6 +10,11 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.join(__dirname, 'dist');
 
+// claude-3-opus-20240229 was retired; override via ANTHROPIC_MODEL in Railway if needed
+const ANTHROPIC_MODEL =
+  process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -18,6 +23,7 @@ app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
+    anthropicModel: ANTHROPIC_MODEL,
     hasDist: fs.existsSync(distPath),
   });
 });
@@ -32,7 +38,7 @@ app.post('/api/generate-board', async (req, res) => {
        return res.status(500).json({ error: 'API key is missing in backend secrets' });
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -40,7 +46,7 @@ app.post('/api/generate-board', async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-opus-20240229',
+        model: ANTHROPIC_MODEL,
         max_tokens: 4000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMsg }],
@@ -49,7 +55,17 @@ app.post('/api/generate-board', async (req, res) => {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err.error?.message || 'API error ' + response.status });
+      const anthropicMsg = err.error?.message || err.message;
+      const detail =
+        anthropicMsg ||
+        (response.status === 404
+          ? `Model "${ANTHROPIC_MODEL}" not found. Set ANTHROPIC_MODEL on Railway (e.g. claude-sonnet-4-6).`
+          : `Anthropic API error ${response.status}`);
+      return res.status(response.status).json({
+        error: detail,
+        source: 'anthropic',
+        model: ANTHROPIC_MODEL,
+      });
     }
 
     const data = await response.json();

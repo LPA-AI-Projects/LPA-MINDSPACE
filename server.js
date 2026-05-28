@@ -14,6 +14,7 @@ const distPath = path.join(__dirname, 'dist');
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS) || 8000;
 
 const app = express();
 app.use(cors());
@@ -24,6 +25,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
     anthropicModel: ANTHROPIC_MODEL,
+    anthropicMaxTokens: ANTHROPIC_MAX_TOKENS,
     hasDist: fs.existsSync(distPath),
   });
 });
@@ -47,7 +49,7 @@ app.post('/api/generate-board', async (req, res) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 4000,
+        max_tokens: ANTHROPIC_MAX_TOKENS,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMsg }],
       }),

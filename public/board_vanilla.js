@@ -4726,6 +4726,62 @@ function hideAiLoading() {
   document.getElementById('ai-send-btn').disabled = false;
 }
 
+function extractFirstJsonObject(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseAiJsonResponse(rawText) {
+  const raw = (rawText || '').trim();
+  if (!raw) throw new Error('Empty AI response');
+
+  const candidates = [];
+  const strippedFence = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  candidates.push(strippedFence);
+  const extracted = extractFirstJsonObject(strippedFence);
+  if (extracted) candidates.push(extracted);
+  const extractedFromRaw = extractFirstJsonObject(raw);
+  if (extractedFromRaw) candidates.push(extractedFromRaw);
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch (_e) {}
+  }
+
+  throw new Error('Could not parse AI response JSON. Try a shorter prompt or ask AI to return fewer objects.');
+}
+
 // ── Main submit
 async function submitAiPrompt() {
   if (isReadOnlyMode()) {
@@ -4821,14 +4877,7 @@ Current board has ${state.objects.length} existing objects — new content must 
     const data = await response.json();
     const rawText = data.content[0]?.text || '';
 
-    // parse JSON — strip any accidental markdown fences
-    let parsed;
-    try {
-      const clean = rawText.replace(/^```json\s*/,'').replace(/```\s*$/,'').trim();
-      parsed = JSON.parse(clean);
-    } catch(e) {
-      throw new Error('Could not parse AI response — try again');
-    }
+    const parsed = parseAiJsonResponse(rawText);
 
     if (!parsed.objects || !Array.isArray(parsed.objects)) {
       throw new Error('Invalid response format');
@@ -5010,8 +5059,7 @@ Replace or modify the selected objects according to the request. Keep them in ro
     }
     const data = await resp.json();
     const raw  = data.content[0]?.text || '';
-    const clean = raw.replace(/^```json\s*/,'').replace(/```\s*$/,'').trim();
-    const parsed = JSON.parse(clean);
+    const parsed = parseAiJsonResponse(raw);
 
     if (!parsed.objects) throw new Error('Invalid response');
 

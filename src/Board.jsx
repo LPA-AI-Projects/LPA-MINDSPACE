@@ -27,6 +27,7 @@ export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
   const boardMountRef = useRef(null);
   const boardHtmlMountedRef = useRef(false);
+  const currentBoardIdRef = useRef(null);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -74,7 +75,16 @@ export default function Board({ session }) {
       let canEdit = true;
       if (boardRecord) {
         boardId = boardRecord.id;
+        currentBoardIdRef.current = boardId;
         localStorage.setItem('lpa-last-board-id', boardId);
+
+        // Main board should be tied to a concrete board id, not "first board by user".
+        if (!shareBoardId && boardId) {
+          const desired = `?board=${encodeURIComponent(boardId)}&mode=edit`;
+          if (window.location.search !== desired) {
+            window.history.replaceState({}, '', `${window.location.pathname}${desired}`);
+          }
+        }
 
         if (shareBoardId) {
           const { canView, canEdit: shareCanEdit } = getBoardAccess(
@@ -128,6 +138,24 @@ export default function Board({ session }) {
 
     loadSession();
   }, [session]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const hasBoardInUrl = !!params.get('board');
+    const mode = params.get('mode') || 'edit';
+    // Only auto-follow board switches for the main board tab.
+    if (!boardLoaded || hasBoardInUrl) return;
+
+    const onStorage = (e) => {
+      if (e.key !== 'lpa-last-board-id' || !e.newValue) return;
+      const nextId = e.newValue;
+      if (nextId === currentBoardIdRef.current) return;
+      const nextUrl = `${window.location.pathname}?board=${encodeURIComponent(nextId)}&mode=${encodeURIComponent(mode)}`;
+      window.location.assign(nextUrl);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [boardLoaded]);
 
   useEffect(() => {
     if (!boardLoaded) return;

@@ -43,6 +43,7 @@ const canEditBoard = boardAccess.canEdit !== false;
 let presenceChannel = null;
 let presenceUsers = [];
 let boardSyncChannel = null;
+let boardSyncChannelReady = false;
 
 /** This script loads dynamically after login; DOMContentLoaded may have already fired. */
 function whenDomReady(fn) {
@@ -1188,6 +1189,7 @@ function saveToStorage() {
       panX: state.panX, panY: state.panY, zoom: state.zoom,
       sharing: state.sharing || null,
     });
+    publishBoardStateUpdate();
   } catch(e) {}
 }
 
@@ -1280,7 +1282,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   redrawAll();
   updateObjectCount();
   History.baseline();
-  showToast(`Board updated (${sourceLabel})`);
+  if (sourceLabel === 'latest') showToast('Board updated');
 }
 
 async function pullLatestBoardStateFromSupabase() {
@@ -1300,6 +1302,11 @@ function initRealtimeBoardSync() {
   if (!window.supabaseClient || !boardAccess.boardId) return;
   const channelName = `board-sync-${boardAccess.boardId}`;
   boardSyncChannel = window.supabaseClient.channel(channelName);
+  boardSyncChannelReady = false;
+  boardSyncChannel.on('broadcast', { event: 'board_state' }, ({ payload }) => {
+    if (!payload || payload.editorId === boardAccess.userId) return;
+    applyRemoteBoardState(payload.state, 'collab');
+  });
   boardSyncChannel.on(
     'postgres_changes',
     {
@@ -1312,7 +1319,30 @@ function initRealtimeBoardSync() {
       applyRemoteBoardState(payload?.new?.state, 'collab');
     },
   );
-  boardSyncChannel.subscribe();
+  boardSyncChannel.subscribe((status) => {
+    boardSyncChannelReady = status === 'SUBSCRIBED';
+  });
+}
+
+function publishBoardStateUpdate() {
+  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId) return;
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: 'board_state',
+    payload: {
+      boardId: boardAccess.boardId,
+      editorId: boardAccess.userId || 'user',
+      state: {
+        boardName: state.boardName,
+        objects: state.objects,
+        panX: state.panX,
+        panY: state.panY,
+        zoom: state.zoom,
+        sharing: state.sharing || null,
+      },
+      updatedAt: Date.now(),
+    },
+  });
 }
 
 document.addEventListener('visibilitychange', () => {

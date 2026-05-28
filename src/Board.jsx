@@ -10,6 +10,19 @@ function getDisplayName(user) {
   return 'User';
 }
 
+function getBoardAccess(boardRecord, userId, userEmail, shareToken, shareMode) {
+  const sharing = boardRecord?.state?.sharing || {};
+  const invites = Array.isArray(sharing.invites) ? sharing.invites : [];
+  const inviteMatch = invites.find((entry) => (entry.email || '').toLowerCase() === userEmail);
+  const isOwner = boardRecord?.user_id === userId;
+  const tokenCanEdit = !!shareToken && shareToken === sharing.editToken;
+  const tokenCanView = !!shareToken && shareToken === sharing.viewToken;
+  const userCanEditByRole = isOwner || inviteMatch?.permission === 'edit';
+  const canEdit = (shareMode === 'edit') && (userCanEditByRole || tokenCanEdit);
+  const canView = canEdit || tokenCanView || inviteMatch?.permission === 'view' || userCanEditByRole;
+  return { canView, canEdit };
+}
+
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
   const boardMountRef = useRef(null);
@@ -28,12 +41,22 @@ export default function Board({ session }) {
       const userName = getDisplayName(session.user);
 
       let boardRecord = null;
+      const lastBoardId = localStorage.getItem('lpa-last-board-id');
 
       if (shareBoardId) {
         const { data } = await supabase
           .from('boards')
           .select('*')
           .eq('id', shareBoardId)
+          .single();
+        boardRecord = data || null;
+      }
+
+      if (!boardRecord && lastBoardId) {
+        const { data } = await supabase
+          .from('boards')
+          .select('*')
+          .eq('id', lastBoardId)
           .single();
         boardRecord = data || null;
       }
@@ -51,23 +74,24 @@ export default function Board({ session }) {
       let canEdit = true;
       if (boardRecord) {
         boardId = boardRecord.id;
-        const sharing = boardRecord.state?.sharing || {};
-        const invites = Array.isArray(sharing.invites) ? sharing.invites : [];
-        const inviteMatch = invites.find((entry) => (entry.email || '').toLowerCase() === userEmail);
-        const isOwner = boardRecord.user_id === userId;
-        const tokenCanEdit = !!shareToken && shareToken === sharing.editToken;
-        const tokenCanView = !!shareToken && shareToken === sharing.viewToken;
+        localStorage.setItem('lpa-last-board-id', boardId);
 
         if (shareBoardId) {
-          const userCanEditByRole = isOwner || inviteMatch?.permission === 'edit';
-          canEdit = (shareMode === 'edit') && (userCanEditByRole || tokenCanEdit);
-          const canView = canEdit || tokenCanView || inviteMatch?.permission === 'view' || userCanEditByRole;
+          const { canView, canEdit: shareCanEdit } = getBoardAccess(
+            boardRecord,
+            userId,
+            userEmail,
+            shareToken,
+            shareMode,
+          );
+          canEdit = shareCanEdit;
           if (!canView) {
             alert('You do not have access to this board.');
             window.location.href = window.location.pathname;
             return;
           }
           if (!canEdit && shareMode !== 'view') {
+            const sharing = boardRecord.state?.sharing || {};
             const safeUrl = `${window.location.pathname}?board=${encodeURIComponent(boardRecord.id)}&mode=view&token=${encodeURIComponent(sharing.viewToken || '')}`;
             window.history.replaceState({}, '', safeUrl);
           }

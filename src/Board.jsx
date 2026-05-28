@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
 
@@ -12,6 +12,8 @@ function getDisplayName(user) {
 
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
+  const boardMountRef = useRef(null);
+  const boardHtmlMountedRef = useRef(false);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -122,9 +124,21 @@ export default function Board({ session }) {
     };
   }, [boardLoaded]);
 
-  if (!boardLoaded) return <div style={{background:'#141414',height:'100vh',color:'white',display:'flex',justifyContent:'center',alignItems:'center'}}>Loading Workspace...</div>;
+  // Mount shell HTML once — re-running dangerouslySetInnerHTML on every render
+  // (e.g. after Supabase TOKEN_REFRESHED on tab focus) wipes the canvas DOM.
+  useEffect(() => {
+    if (!boardLoaded || !boardMountRef.current || boardHtmlMountedRef.current) return;
+    boardMountRef.current.innerHTML = boardHtml;
+    boardHtmlMountedRef.current = true;
+  }, [boardLoaded]);
 
-  return (
-    <div dangerouslySetInnerHTML={{ __html: boardHtml }} />
-  );
+  if (!boardLoaded) {
+    return (
+      <div style={{ background: '#141414', height: '100vh', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        Loading Workspace...
+      </div>
+    );
+  }
+
+  return <div ref={boardMountRef} className="board-shell" />;
 }

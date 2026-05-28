@@ -15,9 +15,13 @@ function App() {
       setLoading(false)
     })
 
-    supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // Token refresh on tab focus must not re-render Board (that wiped the canvas).
+      if (event === 'TOKEN_REFRESHED') return;
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, [])
 
   const handleLogin = async (e) => {

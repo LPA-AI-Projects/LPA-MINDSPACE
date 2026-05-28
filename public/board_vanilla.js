@@ -1231,6 +1231,21 @@ function init() {
   showHint('Welcome to LPA MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
+/** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
+function restoreCanvasIfDomWasCleared() {
+  const world = document.getElementById('canvas-world');
+  if (!world || !state.objects.length) return;
+  const hasObjects =
+    world.querySelector('.sticky-note, .shape-obj, .canvas-text, .image-obj') ||
+    document.getElementById('drawing-layer');
+  if (!hasObjects) redrawAll();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') restoreCanvasIfDomWasCleared();
+});
+window.addEventListener('pageshow', () => restoreCanvasIfDomWasCleared());
+
 function applyAccessModeUi() {
   const avatar = document.querySelector('.tb-avatar');
   if (avatar) avatar.textContent = ((boardAccess.userName || 'U')[0] || 'U').toUpperCase();

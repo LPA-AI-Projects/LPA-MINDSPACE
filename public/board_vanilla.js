@@ -42,6 +42,7 @@ const boardAccess = window.boardAccess || {};
 const canEditBoard = boardAccess.canEdit !== false;
 let presenceChannel = null;
 let presenceUsers = [];
+let boardSyncChannel = null;
 
 /** This script loads dynamically after login; DOMContentLoaded may have already fired. */
 function whenDomReady(fn) {
@@ -1228,6 +1229,7 @@ function init() {
   loadFromStorage();
   applyAccessModeUi();
   initRealtimePresence();
+  initRealtimeBoardSync();
   showHint('Welcome to LPA MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
@@ -1241,10 +1243,88 @@ function restoreCanvasIfDomWasCleared() {
   if (!hasObjects) redrawAll();
 }
 
+function serializeCurrentBoardState() {
+  return JSON.stringify({
+    boardName: state.boardName,
+    objects: state.objects,
+    panX: state.panX,
+    panY: state.panY,
+    zoom: state.zoom,
+    sharing: state.sharing || null,
+  });
+}
+
+function applyRemoteBoardState(remoteState, sourceLabel) {
+  if (!remoteState || typeof remoteState !== 'object') return;
+  let currentSerialized = '';
+  let remoteSerialized = '';
+  try {
+    currentSerialized = serializeCurrentBoardState();
+    remoteSerialized = JSON.stringify(remoteState);
+  } catch (_e) {
+    return;
+  }
+  if (!remoteSerialized || remoteSerialized === currentSerialized) return;
+
+  state.boardName = remoteState.boardName || state.boardName || 'LPA MindSpace';
+  state.panX = Number.isFinite(remoteState.panX) ? remoteState.panX : 0;
+  state.panY = Number.isFinite(remoteState.panY) ? remoteState.panY : 0;
+  state.zoom = Number.isFinite(remoteState.zoom) ? remoteState.zoom : 1;
+  state.objects = Array.isArray(remoteState.objects) ? remoteState.objects : [];
+  state.sharing = remoteState.sharing || null;
+
+  const boardNameInput = document.getElementById('boardName');
+  if (boardNameInput) boardNameInput.value = state.boardName;
+  document.title = state.boardName + ' — LPA MindSpace';
+  applyTransform();
+  redrawAll();
+  updateObjectCount();
+  History.baseline();
+  showToast(`Board updated (${sourceLabel})`);
+}
+
+async function pullLatestBoardStateFromSupabase() {
+  try {
+    if (!window.supabaseClient || !boardAccess.boardId) return;
+    const { data, error } = await window.supabaseClient
+      .from('boards')
+      .select('state')
+      .eq('id', boardAccess.boardId)
+      .single();
+    if (error || !data?.state) return;
+    applyRemoteBoardState(data.state, 'latest');
+  } catch (_e) {}
+}
+
+function initRealtimeBoardSync() {
+  if (!window.supabaseClient || !boardAccess.boardId) return;
+  const channelName = `board-sync-${boardAccess.boardId}`;
+  boardSyncChannel = window.supabaseClient.channel(channelName);
+  boardSyncChannel.on(
+    'postgres_changes',
+    {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'boards',
+      filter: `id=eq.${boardAccess.boardId}`,
+    },
+    (payload) => {
+      applyRemoteBoardState(payload?.new?.state, 'collab');
+    },
+  );
+  boardSyncChannel.subscribe();
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') restoreCanvasIfDomWasCleared();
+  if (document.visibilityState === 'visible') {
+    restoreCanvasIfDomWasCleared();
+    pullLatestBoardStateFromSupabase();
+  }
 });
-window.addEventListener('pageshow', () => restoreCanvasIfDomWasCleared());
+window.addEventListener('pageshow', () => {
+  restoreCanvasIfDomWasCleared();
+  pullLatestBoardStateFromSupabase();
+});
 
 function applyAccessModeUi() {
   const avatar = document.querySelector('.tb-avatar');
@@ -1353,6 +1433,7 @@ document.addEventListener('mousemove', (ev) => {
 
 window.addEventListener('beforeunload', () => {
   if (presenceChannel) presenceChannel.unsubscribe();
+  if (boardSyncChannel) boardSyncChannel.unsubscribe();
 });
 
 

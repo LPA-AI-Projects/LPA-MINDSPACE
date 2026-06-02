@@ -44,6 +44,8 @@ let presenceChannel = null;
 let presenceUsers = [];
 let boardSyncChannel = null;
 let boardSyncChannelReady = false;
+const realtimeClientId = `${boardAccess.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
+let lastPublishedBoardState = null;
 
 /** This script loads dynamically after login; DOMContentLoaded may have already fired. */
 function whenDomReady(fn) {
@@ -1189,7 +1191,7 @@ function saveToStorage() {
       panX: state.panX, panY: state.panY, zoom: state.zoom,
       sharing: state.sharing || null,
     });
-    publishBoardStateUpdate();
+    publishBoardDeltaUpdate();
   } catch(e) {}
 }
 
@@ -1229,6 +1231,7 @@ window.addEventListener('beforeunload', saveToStorage);
 function init() {
   applyTransform();
   loadFromStorage();
+  lastPublishedBoardState = getCurrentBoardState();
   applyAccessModeUi();
   initRealtimePresence();
   initRealtimeBoardSync();
@@ -1254,6 +1257,21 @@ function serializeCurrentBoardState() {
     zoom: state.zoom,
     sharing: state.sharing || null,
   });
+}
+
+function getCurrentBoardState() {
+  return {
+    boardName: state.boardName,
+    objects: state.objects,
+    panX: state.panX,
+    panY: state.panY,
+    zoom: state.zoom,
+    sharing: state.sharing || null,
+  };
+}
+
+function cloneBoardStateSnapshot(source) {
+  return JSON.parse(JSON.stringify(source || getCurrentBoardState()));
 }
 
 function applyRemoteBoardState(remoteState, sourceLabel) {
@@ -1282,6 +1300,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   redrawAll();
   updateObjectCount();
   History.baseline();
+  lastPublishedBoardState = cloneBoardStateSnapshot(remoteState);
   if (sourceLabel === 'latest') showToast('Board updated');
 }
 
@@ -1300,11 +1319,28 @@ async function pullLatestBoardStateFromSupabase() {
 
 function initRealtimeBoardSync() {
   if (!window.supabaseClient || !boardAccess.boardId) return;
-  const channelName = `board-sync-${boardAccess.boardId}`;
+  const channelName = boardAccess.sessionId
+    ? `session-sync-${boardAccess.sessionId}`
+    : `board-sync-${boardAccess.boardId}`;
   boardSyncChannel = window.supabaseClient.channel(channelName);
   boardSyncChannelReady = false;
+  boardSyncChannel.on('broadcast', { event: 'board_resync_request' }, ({ payload }) => {
+    if (!payload || payload.requesterId === realtimeClientId) return;
+    // Any editor can answer with latest snapshot; observers are read-only responders.
+    if (!canEditBoard) return;
+    publishBoardStateUpdate({ targetClientId: payload.requesterId, reason: 'resync' });
+  });
+  boardSyncChannel.on('broadcast', { event: 'board_resync_state' }, ({ payload }) => {
+    if (!payload || payload.senderId === realtimeClientId) return;
+    if (payload.targetClientId && payload.targetClientId !== realtimeClientId) return;
+    applyRemoteBoardState(payload.state, 'latest');
+  });
+  boardSyncChannel.on('broadcast', { event: 'board_ops' }, ({ payload }) => {
+    if (!payload || payload.editorId === realtimeClientId) return;
+    applyRemoteBoardOps(payload.ops, payload.meta);
+  });
   boardSyncChannel.on('broadcast', { event: 'board_state' }, ({ payload }) => {
-    if (!payload || payload.editorId === boardAccess.userId) return;
+    if (!payload || payload.editorId === realtimeClientId) return;
     applyRemoteBoardState(payload.state, 'collab');
   });
   boardSyncChannel.on(
@@ -1321,28 +1357,170 @@ function initRealtimeBoardSync() {
   );
   boardSyncChannel.subscribe((status) => {
     boardSyncChannelReady = status === 'SUBSCRIBED';
+    if (status === 'SUBSCRIBED') {
+      pullLatestBoardStateFromSupabase();
+      requestRealtimeResync();
+    }
   });
 }
 
-function publishBoardStateUpdate() {
-  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId) return;
+function requestRealtimeResync() {
+  if (!boardSyncChannel || !boardSyncChannelReady) return;
   boardSyncChannel.send({
     type: 'broadcast',
-    event: 'board_state',
+    event: 'board_resync_request',
     payload: {
       boardId: boardAccess.boardId,
-      editorId: boardAccess.userId || 'user',
-      state: {
-        boardName: state.boardName,
-        objects: state.objects,
-        panX: state.panX,
-        panY: state.panY,
-        zoom: state.zoom,
-        sharing: state.sharing || null,
-      },
+      requesterId: realtimeClientId,
+      requestedAt: Date.now(),
+    },
+  });
+}
+
+function publishBoardStateUpdate({ targetClientId = null, reason = 'state' } = {}) {
+  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId || !canEditBoard) return;
+  const snapshot = cloneBoardStateSnapshot();
+  lastPublishedBoardState = snapshot;
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: reason === 'resync' ? 'board_resync_state' : 'board_state',
+    payload: {
+      boardId: boardAccess.boardId,
+      editorId: realtimeClientId,
+      senderId: realtimeClientId,
+      targetClientId,
+      state: snapshot,
       updatedAt: Date.now(),
     },
   });
+}
+
+function getObjectId(obj) {
+  return obj?.id != null ? String(obj.id) : null;
+}
+
+function createObjectMap(objects) {
+  const m = new Map();
+  (objects || []).forEach((obj) => {
+    const id = getObjectId(obj);
+    if (!id) return;
+    m.set(id, obj);
+  });
+  return m;
+}
+
+function buildBoardOps(previousState, nextState) {
+  const ops = [];
+  const prevMap = createObjectMap(previousState?.objects || []);
+  const nextMap = createObjectMap(nextState?.objects || []);
+
+  prevMap.forEach((_obj, id) => {
+    if (!nextMap.has(id)) ops.push({ t: 'delete', id });
+  });
+
+  nextMap.forEach((obj, id) => {
+    const prevObj = prevMap.get(id);
+    if (!prevObj) {
+      ops.push({ t: 'upsert', obj });
+      return;
+    }
+    if (JSON.stringify(prevObj) !== JSON.stringify(obj)) ops.push({ t: 'upsert', obj });
+  });
+
+  const viewportChanged =
+    previousState?.panX !== nextState?.panX ||
+    previousState?.panY !== nextState?.panY ||
+    previousState?.zoom !== nextState?.zoom;
+  if (viewportChanged) {
+    ops.push({ t: 'viewport', panX: nextState.panX, panY: nextState.panY, zoom: nextState.zoom });
+  }
+
+  if ((previousState?.boardName || '') !== (nextState?.boardName || '')) {
+    ops.push({ t: 'boardName', boardName: nextState.boardName || 'LPA MindSpace' });
+  }
+
+  if (JSON.stringify(previousState?.sharing || null) !== JSON.stringify(nextState?.sharing || null)) {
+    ops.push({ t: 'sharing', sharing: nextState.sharing || null });
+  }
+
+  return ops;
+}
+
+function applyRemoteBoardOps(ops, meta = {}) {
+  if (!Array.isArray(ops) || ops.length === 0) return;
+  let changed = false;
+  const objectMap = createObjectMap(state.objects);
+
+  ops.forEach((op) => {
+    if (!op || !op.t) return;
+    if (op.t === 'delete' && op.id != null) {
+      if (objectMap.delete(String(op.id))) changed = true;
+      return;
+    }
+    if (op.t === 'upsert' && op.obj) {
+      const id = getObjectId(op.obj);
+      if (!id) return;
+      objectMap.set(id, op.obj);
+      changed = true;
+      return;
+    }
+    if (op.t === 'viewport') {
+      state.panX = Number.isFinite(op.panX) ? op.panX : state.panX;
+      state.panY = Number.isFinite(op.panY) ? op.panY : state.panY;
+      state.zoom = Number.isFinite(op.zoom) ? op.zoom : state.zoom;
+      changed = true;
+      return;
+    }
+    if (op.t === 'boardName') {
+      state.boardName = op.boardName || state.boardName;
+      const boardNameInput = document.getElementById('boardName');
+      if (boardNameInput) boardNameInput.value = state.boardName;
+      document.title = `${state.boardName} — LPA MindSpace`;
+      changed = true;
+      return;
+    }
+    if (op.t === 'sharing') {
+      state.sharing = op.sharing || null;
+      changed = true;
+    }
+  });
+
+  if (!changed) return;
+  state.objects = Array.from(objectMap.values());
+  applyTransform();
+  redrawAll();
+  updateObjectCount();
+  History.baseline();
+  lastPublishedBoardState = cloneBoardStateSnapshot();
+  if (meta?.reason === 'resync') showToast('Board synced');
+}
+
+function publishBoardDeltaUpdate() {
+  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId || !canEditBoard) return;
+  const nextState = cloneBoardStateSnapshot();
+  const previousState = lastPublishedBoardState || nextState;
+  const ops = buildBoardOps(previousState, nextState);
+  if (!ops.length) return;
+
+  // If too many changes, send a full snapshot to avoid huge op lists.
+  if (ops.length > 180) {
+    publishBoardStateUpdate({ reason: 'state' });
+    return;
+  }
+
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: 'board_ops',
+    payload: {
+      boardId: boardAccess.boardId,
+      editorId: realtimeClientId,
+      ops,
+      meta: {
+        sentAt: Date.now(),
+      },
+    },
+  });
+  lastPublishedBoardState = nextState;
 }
 
 document.addEventListener('visibilitychange', () => {

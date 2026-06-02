@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
 
+const EDIT_ROLES = new Set(['facilitator', 'co_facilitator', 'participant']);
+
 function getDisplayName(user) {
   if (!user) return 'Guest';
   const fromMeta = user.user_metadata?.full_name || user.user_metadata?.name;
@@ -23,28 +25,135 @@ function getBoardAccess(boardRecord, userId, userEmail, shareToken, shareMode) {
   return { canView, canEdit };
 }
 
+function getQueryParams() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    sessionId: params.get('session'),
+    shareBoardId: params.get('board'),
+    shareMode: params.get('mode') === 'view' ? 'view' : 'edit',
+    shareToken: params.get('token'),
+  };
+}
+
+async function loadSessionScopedBoard(sessionId, userId) {
+  if (!sessionId) return null;
+  try {
+    let { data: sessionRow } = await supabase
+      .from('sessions')
+      .select('id, board_id, created_by, facilitator_ids, status')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    // Create reusable session on first access (creator becomes facilitator).
+    if (!sessionRow) {
+      const { data: newBoard } = await supabase
+        .from('boards')
+        .insert({ user_id: userId, state: {} })
+        .select('*')
+        .single();
+      if (!newBoard) return null;
+
+      const createRes = await supabase
+        .from('sessions')
+        .insert({
+          id: sessionId,
+          board_id: newBoard.id,
+          created_by: userId,
+          facilitator_ids: [userId],
+          status: 'active',
+          is_reusable: true,
+        })
+        .select('id, board_id, created_by, facilitator_ids, status')
+        .single();
+      sessionRow = createRes.data || null;
+    }
+
+    if (!sessionRow?.board_id) return null;
+
+    const { data: boardRecord } = await supabase
+      .from('boards')
+      .select('*')
+      .eq('id', sessionRow.board_id)
+      .single();
+    if (!boardRecord) return null;
+
+    const facilitatorIds = Array.isArray(sessionRow.facilitator_ids) ? sessionRow.facilitator_ids : [];
+    const defaultRole = sessionRow.created_by === userId || facilitatorIds.includes(userId)
+      ? 'facilitator'
+      : 'participant';
+
+    let { data: participant } = await supabase
+      .from('session_participants')
+      .select('role, can_override_workspace')
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!participant) {
+      const { data: inserted } = await supabase
+        .from('session_participants')
+        .insert({
+          session_id: sessionId,
+          user_id: userId,
+          role: defaultRole,
+          can_override_workspace: defaultRole === 'facilitator' || defaultRole === 'co_facilitator',
+        })
+        .select('role, can_override_workspace')
+        .single();
+      participant = inserted || { role: defaultRole, can_override_workspace: defaultRole !== 'participant' };
+    } else {
+      // Keep lightweight heartbeat for activity panel.
+      supabase
+        .from('session_participants')
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq('session_id', sessionId)
+        .eq('user_id', userId);
+    }
+
+    return {
+      boardRecord,
+      sessionRow,
+      role: participant?.role || defaultRole,
+      canOverrideWorkspace: !!participant?.can_override_workspace,
+    };
+  } catch (_e) {
+    // If schema is not migrated yet, fallback to legacy board mode.
+    return null;
+  }
+}
+
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
   const boardMountRef = useRef(null);
   const boardHtmlMountedRef = useRef(false);
   const currentBoardIdRef = useRef(null);
+  const currentSessionIdRef = useRef(null);
 
   useEffect(() => {
     const loadSession = async () => {
       if (!session) return;
 
-      const params = new URLSearchParams(window.location.search);
-      const shareBoardId = params.get('board');
-      const shareMode = params.get('mode') === 'view' ? 'view' : 'edit';
-      const shareToken = params.get('token');
+      const { sessionId, shareBoardId, shareMode, shareToken } = getQueryParams();
       const userId = session.user.id;
       const userEmail = (session.user.email || '').toLowerCase();
       const userName = getDisplayName(session.user);
 
       let boardRecord = null;
+      let role = 'participant';
+      let canOverrideWorkspace = false;
+      let resolvedSessionId = sessionId || null;
       const lastBoardId = localStorage.getItem('lpa-last-board-id');
+      const lastSessionId = localStorage.getItem('lpa-last-session-id');
 
-      if (shareBoardId) {
+      const sessionScoped = await loadSessionScopedBoard(sessionId || lastSessionId, userId);
+      if (sessionScoped) {
+        boardRecord = sessionScoped.boardRecord;
+        role = sessionScoped.role;
+        canOverrideWorkspace = sessionScoped.canOverrideWorkspace;
+        resolvedSessionId = sessionScoped.sessionRow.id;
+      }
+
+      if (!boardRecord && shareBoardId) {
         const { data } = await supabase
           .from('boards')
           .select('*')
@@ -76,17 +185,21 @@ export default function Board({ session }) {
       if (boardRecord) {
         boardId = boardRecord.id;
         currentBoardIdRef.current = boardId;
+        currentSessionIdRef.current = resolvedSessionId;
         localStorage.setItem('lpa-last-board-id', boardId);
+        if (resolvedSessionId) localStorage.setItem('lpa-last-session-id', resolvedSessionId);
 
-        // Main board should be tied to a concrete board id, not "first board by user".
-        if (!shareBoardId && boardId) {
-          const desired = `?board=${encodeURIComponent(boardId)}&mode=edit`;
+        // Main board should be tied to concrete session/board context.
+        if (!shareBoardId && boardId && resolvedSessionId) {
+          const desired = `?session=${encodeURIComponent(resolvedSessionId)}&board=${encodeURIComponent(boardId)}&mode=edit`;
           if (window.location.search !== desired) {
             window.history.replaceState({}, '', `${window.location.pathname}${desired}`);
           }
         }
 
-        if (shareBoardId) {
+        if (resolvedSessionId) {
+          canEdit = EDIT_ROLES.has(role);
+        } else if (shareBoardId) {
           const { canView, canEdit: shareCanEdit } = getBoardAccess(
             boardRecord,
             userId,
@@ -113,6 +226,9 @@ export default function Board({ session }) {
       window.supabaseClient = supabase;
       window.boardAccess = {
         boardId,
+        sessionId: resolvedSessionId,
+        role,
+        canOverrideWorkspace,
         ownerId: boardRecord?.user_id || userId,
         userId,
         userEmail,
@@ -141,16 +257,17 @@ export default function Board({ session }) {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const hasSessionInUrl = !!params.get('session');
     const hasBoardInUrl = !!params.get('board');
     const mode = params.get('mode') || 'edit';
     // Only auto-follow board switches for the main board tab.
-    if (!boardLoaded || hasBoardInUrl) return;
+    if (!boardLoaded || hasSessionInUrl || hasBoardInUrl) return;
 
     const onStorage = (e) => {
-      if (e.key !== 'lpa-last-board-id' || !e.newValue) return;
-      const nextId = e.newValue;
-      if (nextId === currentBoardIdRef.current) return;
-      const nextUrl = `${window.location.pathname}?board=${encodeURIComponent(nextId)}&mode=${encodeURIComponent(mode)}`;
+      if (e.key !== 'lpa-last-session-id' || !e.newValue) return;
+      const nextSessionId = e.newValue;
+      if (nextSessionId === currentSessionIdRef.current) return;
+      const nextUrl = `${window.location.pathname}?session=${encodeURIComponent(nextSessionId)}&mode=${encodeURIComponent(mode)}`;
       window.location.assign(nextUrl);
     };
     window.addEventListener('storage', onStorage);

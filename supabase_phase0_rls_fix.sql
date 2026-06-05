@@ -1,34 +1,9 @@
--- Phase 0 foundation for session-based collaboration (1 session = 1 board).
--- Apply in Supabase SQL Editor.
+-- Fix Phase 0 RLS issues:
+-- 1) sessions SELECT 500 (infinite recursion with session_participants policies)
+-- 2) boards POST 403 (missing insert / session-shared read policies)
+-- Run this in Supabase SQL Editor after supabase_phase0_sessions.sql
 
-create table if not exists public.sessions (
-  id text primary key,
-  board_id bigint not null references public.boards(id) on delete cascade,
-  created_by uuid not null,
-  facilitator_ids uuid[] not null default '{}',
-  status text not null default 'active',
-  is_reusable boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table if not exists public.session_participants (
-  session_id text not null references public.sessions(id) on delete cascade,
-  user_id uuid not null,
-  role text not null default 'participant',
-  can_override_workspace boolean not null default false,
-  last_seen_at timestamptz not null default now(),
-  created_at timestamptz not null default now(),
-  primary key (session_id, user_id)
-);
-
-create index if not exists idx_session_participants_session on public.session_participants(session_id);
-create index if not exists idx_sessions_board on public.sessions(board_id);
-
-alter table public.sessions enable row level security;
-alter table public.session_participants enable row level security;
-
--- Security definer helpers avoid RLS recursion between sessions and session_participants.
+-- Security definer helpers bypass RLS for membership checks (no policy recursion).
 create or replace function public.is_session_participant(p_session_id text, p_user_id uuid default auth.uid())
 returns boolean
 language sql
@@ -120,7 +95,7 @@ grant execute on function public.is_session_facilitator(text, uuid) to authentic
 grant execute on function public.user_can_access_board(bigint, uuid) to authenticated;
 grant execute on function public.user_can_edit_board(bigint, uuid) to authenticated;
 
--- Session visibility: participants or facilitators can read session.
+-- Sessions: replace recursive policies.
 drop policy if exists sessions_select on public.sessions;
 create policy sessions_select on public.sessions
 for select
@@ -130,22 +105,6 @@ using (
   or public.is_session_participant(id)
 );
 
--- Session creation by authenticated users.
-drop policy if exists sessions_insert on public.sessions;
-create policy sessions_insert on public.sessions
-for insert
-with check (auth.uid() is not null and created_by = auth.uid());
-
--- Session update by facilitators/creator.
-drop policy if exists sessions_update on public.sessions;
-create policy sessions_update on public.sessions
-for update
-using (
-  created_by = auth.uid()
-  or auth.uid() = any(facilitator_ids)
-);
-
--- Participants can read participants in sessions they are part of.
 drop policy if exists session_participants_select on public.session_participants;
 create policy session_participants_select on public.session_participants
 for select
@@ -155,47 +114,8 @@ using (
   or public.is_session_facilitator(session_id)
 );
 
--- User can upsert their own participant row.
-drop policy if exists session_participants_insert on public.session_participants;
-create policy session_participants_insert on public.session_participants
-for insert
-with check (auth.uid() is not null and user_id = auth.uid());
-
-drop policy if exists session_participants_update on public.session_participants;
-create policy session_participants_update on public.session_participants
-for update
-using (
-  user_id = auth.uid()
-  or exists (
-    select 1 from public.sessions s
-    where s.id = session_participants.session_id
-      and (s.created_by = auth.uid() or auth.uid() = any(s.facilitator_ids))
-  )
-);
-
--- Role guardrail.
-alter table public.session_participants
-  drop constraint if exists session_participants_role_check;
-alter table public.session_participants
-  add constraint session_participants_role_check
-  check (role in ('facilitator', 'co_facilitator', 'participant', 'observer'));
-
--- Keep updated_at fresh.
-create or replace function public.touch_updated_at()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
-drop trigger if exists trg_sessions_touch_updated_at on public.sessions;
-create trigger trg_sessions_touch_updated_at
-before update on public.sessions
-for each row execute function public.touch_updated_at();
-
+-- Bootstrap RPC: creates board + session + facilitator row with elevated privileges.
+-- Use this when direct boards INSERT is blocked by legacy/conflicting RLS policies.
 create or replace function public.bootstrap_training_session(p_session_id text)
 returns table (
   session_id text,
@@ -259,7 +179,7 @@ $$;
 
 grant execute on function public.bootstrap_training_session(text) to authenticated;
 
--- Boards: session members can read/edit the session board (not only the owner).
+-- Boards: remove every legacy policy name, then recreate clean policies.
 alter table public.boards enable row level security;
 
 do $$

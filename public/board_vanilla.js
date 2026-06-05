@@ -46,6 +46,8 @@ let boardSyncChannel = null;
 let boardSyncChannelReady = false;
 const realtimeClientId = `${boardAccess.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
 let lastPublishedBoardState = null;
+const remoteCollabClients = new Map();
+let collabPresenceHeartbeat = null;
 
 /** This script loads dynamically after login; DOMContentLoaded may have already fired. */
 function whenDomReady(fn) {
@@ -1343,6 +1345,20 @@ function initRealtimeBoardSync() {
     if (!payload || payload.editorId === realtimeClientId) return;
     applyRemoteBoardState(payload.state, 'collab');
   });
+  boardSyncChannel.on('broadcast', { event: 'collab_presence' }, ({ payload }) => {
+    if (!payload || payload.clientId === realtimeClientId) return;
+    remoteCollabClients.set(payload.clientId, {
+      clientId: payload.clientId,
+      userId: payload.userId,
+      name: payload.name || 'User',
+      color: payload.color || userColorFromId(payload.clientId),
+      cursorX: payload.cursorX,
+      cursorY: payload.cursorY,
+      updatedAt: payload.updatedAt || Date.now(),
+    });
+    pruneStaleCollabClients();
+    renderPresence();
+  });
   boardSyncChannel.on(
     'postgres_changes',
     {
@@ -1360,7 +1376,35 @@ function initRealtimeBoardSync() {
     if (status === 'SUBSCRIBED') {
       pullLatestBoardStateFromSupabase();
       requestRealtimeResync();
+      publishCollabPresence(null, null);
+      if (collabPresenceHeartbeat) clearInterval(collabPresenceHeartbeat);
+      collabPresenceHeartbeat = setInterval(() => publishCollabPresence(null, null), 4000);
     }
+  });
+}
+
+function pruneStaleCollabClients() {
+  const cutoff = Date.now() - 12000;
+  remoteCollabClients.forEach((client, clientId) => {
+    if ((client.updatedAt || 0) < cutoff) remoteCollabClients.delete(clientId);
+  });
+}
+
+function publishCollabPresence(cursorX, cursorY) {
+  if (!boardSyncChannel || !boardSyncChannelReady) return;
+  const access = window.boardAccess || boardAccess;
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: 'collab_presence',
+    payload: {
+      clientId: realtimeClientId,
+      userId: access.userId,
+      name: access.userName || access.userEmail || 'User',
+      color: userColorFromId(realtimeClientId),
+      cursorX: Number.isFinite(cursorX) ? cursorX : null,
+      cursorY: Number.isFinite(cursorY) ? cursorY : null,
+      updatedAt: Date.now(),
+    },
   });
 }
 
@@ -1559,8 +1603,27 @@ function userColorFromId(id) {
   return palette[hash % palette.length];
 }
 
+function buildPresencePayload(cursorX = null, cursorY = null) {
+  return {
+    clientId: realtimeClientId,
+    userId: boardAccess.userId,
+    name: boardAccess.userName || boardAccess.userEmail || 'User',
+    color: userColorFromId(realtimeClientId),
+    cursorX,
+    cursorY,
+  };
+}
+
+function getRemoteCollabUsers() {
+  pruneStaleCollabClients();
+  const fromBroadcast = Array.from(remoteCollabClients.values());
+  if (fromBroadcast.length) return fromBroadcast;
+  return presenceUsers.filter((u) => u.clientId && u.clientId !== realtimeClientId);
+}
+
 function renderPresence() {
-  const others = presenceUsers.filter((u) => u.userId !== boardAccess.userId);
+  // One entry per tab/client (not per user), so same account in 2 tabs shows 2 avatars.
+  const others = getRemoteCollabUsers();
   const avatars = document.getElementById('tb-presence');
   const layer = document.getElementById('presence-layer');
   if (!avatars || !layer) return;
@@ -1583,17 +1646,25 @@ function renderPresence() {
 
 function initRealtimePresence() {
   if (!window.supabaseClient || !boardAccess.boardId) return;
+  if (presenceChannel) {
+    presenceChannel.unsubscribe();
+    presenceChannel = null;
+  }
 
-  const channelName = `presence-board-${boardAccess.boardId}`;
+  const channelName = boardAccess.sessionId
+    ? `presence-session-${boardAccess.sessionId}`
+    : `presence-board-${boardAccess.boardId}`;
   presenceChannel = window.supabaseClient.channel(channelName, {
-    config: { presence: { key: boardAccess.userId || uid() } },
+    config: { presence: { key: realtimeClientId } },
   });
 
   presenceChannel.on('presence', { event: 'sync' }, () => {
     const stateMap = presenceChannel.presenceState();
     const users = [];
-    Object.values(stateMap).forEach((entries) => {
-      entries.forEach((entry) => users.push(entry));
+    Object.entries(stateMap).forEach(([presenceKey, entries]) => {
+      entries.forEach((entry) => {
+        users.push({ ...entry, clientId: entry.clientId || presenceKey });
+      });
     });
     presenceUsers = users;
     renderPresence();
@@ -1601,45 +1672,34 @@ function initRealtimePresence() {
 
   presenceChannel.on('presence', { event: 'join' }, ({ newPresences }) => {
     newPresences.forEach((p) => {
-      if (p.userId !== boardAccess.userId) showToast(`${p.name || 'Someone'} joined the board`);
+      if (p.clientId !== realtimeClientId) showToast(`${p.name || 'Someone'} joined the board`);
     });
   });
 
   presenceChannel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
     leftPresences.forEach((p) => {
-      if (p.userId !== boardAccess.userId) showToast(`${p.name || 'Someone'} left`);
+      if (p.clientId !== realtimeClientId) showToast(`${p.name || 'Someone'} left`);
     });
   });
 
   presenceChannel.subscribe(async (status) => {
     if (status !== 'SUBSCRIBED') return;
-    await presenceChannel.track({
-      userId: boardAccess.userId,
-      name: boardAccess.userName || boardAccess.userEmail || 'User',
-      color: userColorFromId(boardAccess.userId),
-      cursorX: null,
-      cursorY: null,
-    });
+    await presenceChannel.track(buildPresencePayload());
   });
 }
 
 let presenceMoveTimer = null;
 document.addEventListener('mousemove', (ev) => {
-  if (!presenceChannel) return;
   if (presenceMoveTimer) return;
   presenceMoveTimer = setTimeout(() => {
     presenceMoveTimer = null;
-    presenceChannel.track({
-      userId: boardAccess.userId,
-      name: boardAccess.userName || boardAccess.userEmail || 'User',
-      color: userColorFromId(boardAccess.userId),
-      cursorX: ev.clientX,
-      cursorY: ev.clientY,
-    });
+    publishCollabPresence(ev.clientX, ev.clientY);
+    if (presenceChannel) presenceChannel.track(buildPresencePayload(ev.clientX, ev.clientY));
   }, 70);
 });
 
 window.addEventListener('beforeunload', () => {
+  if (collabPresenceHeartbeat) clearInterval(collabPresenceHeartbeat);
   if (presenceChannel) presenceChannel.unsubscribe();
   if (boardSyncChannel) boardSyncChannel.unsubscribe();
 });

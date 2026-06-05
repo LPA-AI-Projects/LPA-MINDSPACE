@@ -27,54 +27,72 @@ function getBoardAccess(boardRecord, userId, userEmail, shareToken, shareMode) {
 
 function getQueryParams() {
   const params = new URLSearchParams(window.location.search);
+  const rawBoardId = params.get('board');
+  const shareBoardId = rawBoardId && /^\d+$/.test(rawBoardId) ? rawBoardId : null;
   return {
     sessionId: params.get('session'),
-    shareBoardId: params.get('board'),
+    shareBoardId,
     shareMode: params.get('mode') === 'view' ? 'view' : 'edit',
     shareToken: params.get('token'),
   };
 }
 
+async function fetchBoardById(boardId) {
+  if (boardId == null || boardId === '') return null;
+  const { data, error } = await supabase
+    .from('boards')
+    .select('*')
+    .eq('id', boardId)
+    .maybeSingle();
+  if (error) {
+    logSessionError('load board', error);
+    return null;
+  }
+  return data || null;
+}
+
+function logSessionError(step, error) {
+  if (error) console.error(`[session] ${step}:`, error.message || error);
+}
+
 async function loadSessionScopedBoard(sessionId, userId) {
   if (!sessionId) return null;
   try {
-    let { data: sessionRow } = await supabase
+    const { data: sessionRowInitial, error: sessionLookupError } = await supabase
       .from('sessions')
       .select('id, board_id, created_by, facilitator_ids, status')
       .eq('id', sessionId)
       .maybeSingle();
+    if (sessionLookupError) {
+      logSessionError('lookup session', sessionLookupError);
+      return null;
+    }
+
+    let sessionRow = sessionRowInitial;
 
     // Create reusable session on first access (creator becomes facilitator).
     if (!sessionRow) {
-      const { data: newBoard } = await supabase
-        .from('boards')
-        .insert({ user_id: userId, state: {} })
-        .select('*')
-        .single();
-      if (!newBoard) return null;
-
-      const createRes = await supabase
-        .from('sessions')
-        .insert({
-          id: sessionId,
-          board_id: newBoard.id,
-          created_by: userId,
-          facilitator_ids: [userId],
-          status: 'active',
-          is_reusable: true,
-        })
-        .select('id, board_id, created_by, facilitator_ids, status')
-        .single();
-      sessionRow = createRes.data || null;
+      const { data: bootstrapped, error: bootstrapError } = await supabase.rpc(
+        'bootstrap_training_session',
+        { p_session_id: sessionId },
+      );
+      const bootstrapRow = Array.isArray(bootstrapped) ? bootstrapped[0] : bootstrapped;
+      if (bootstrapError || !bootstrapRow?.board_id) {
+        logSessionError('bootstrap session', bootstrapError);
+        return null;
+      }
+      sessionRow = {
+        id: bootstrapRow.session_id || sessionId,
+        board_id: bootstrapRow.board_id,
+        created_by: bootstrapRow.created_by,
+        facilitator_ids: bootstrapRow.facilitator_ids,
+        status: bootstrapRow.status,
+      };
     }
 
     if (!sessionRow?.board_id) return null;
 
-    const { data: boardRecord } = await supabase
-      .from('boards')
-      .select('*')
-      .eq('id', sessionRow.board_id)
-      .single();
+    const boardRecord = await fetchBoardById(sessionRow.board_id);
     if (!boardRecord) return null;
 
     const facilitatorIds = Array.isArray(sessionRow.facilitator_ids) ? sessionRow.facilitator_ids : [];
@@ -82,15 +100,21 @@ async function loadSessionScopedBoard(sessionId, userId) {
       ? 'facilitator'
       : 'participant';
 
-    let { data: participant } = await supabase
+    const { data: participantInitial, error: participantLookupError } = await supabase
       .from('session_participants')
       .select('role, can_override_workspace')
       .eq('session_id', sessionId)
       .eq('user_id', userId)
       .maybeSingle();
+    if (participantLookupError) {
+      logSessionError('lookup participant', participantLookupError);
+      return null;
+    }
+
+    let participant = participantInitial;
 
     if (!participant) {
-      const { data: inserted } = await supabase
+      const { data: inserted, error: participantInsertError } = await supabase
         .from('session_participants')
         .insert({
           session_id: sessionId,
@@ -100,6 +124,10 @@ async function loadSessionScopedBoard(sessionId, userId) {
         })
         .select('role, can_override_workspace')
         .single();
+      if (participantInsertError) {
+        logSessionError('create participant', participantInsertError);
+        return null;
+      }
       participant = inserted || { role: defaultRole, can_override_workspace: defaultRole !== 'participant' };
     } else {
       // Keep lightweight heartbeat for activity panel.
@@ -154,21 +182,11 @@ export default function Board({ session }) {
       }
 
       if (!boardRecord && shareBoardId) {
-        const { data } = await supabase
-          .from('boards')
-          .select('*')
-          .eq('id', shareBoardId)
-          .single();
-        boardRecord = data || null;
+        boardRecord = await fetchBoardById(shareBoardId);
       }
 
-      if (!boardRecord && lastBoardId) {
-        const { data } = await supabase
-          .from('boards')
-          .select('*')
-          .eq('id', lastBoardId)
-          .single();
-        boardRecord = data || null;
+      if (!boardRecord && lastBoardId && /^\d+$/.test(lastBoardId)) {
+        boardRecord = await fetchBoardById(lastBoardId);
       }
 
       if (!boardRecord) {
@@ -278,7 +296,7 @@ export default function Board({ session }) {
     if (!boardLoaded) return;
 
     const script = document.createElement('script');
-    const buildId = import.meta.env.VITE_BUILD_ID || '';
+    const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
     document.body.appendChild(script);
 

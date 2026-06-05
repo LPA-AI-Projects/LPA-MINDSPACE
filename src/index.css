@@ -305,7 +305,7 @@ body{
   position:fixed;
   inset:0;
   pointer-events:none;
-  z-index:260;
+  z-index:900;
 }
 .presence-cursor{
   position:fixed;

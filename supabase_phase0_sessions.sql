@@ -109,7 +109,7 @@ as $$
             on sp.session_id = s.id
            and sp.user_id = p_user_id
           where s.board_id = b.id
-            and sp.role in ('facilitator', 'co_facilitator', 'participant')
+            and sp.role in ('facilitator', 'participant')
         )
       )
   );
@@ -178,7 +178,7 @@ alter table public.session_participants
   drop constraint if exists session_participants_role_check;
 alter table public.session_participants
   add constraint session_participants_role_check
-  check (role in ('facilitator', 'co_facilitator', 'participant', 'observer'));
+  check (role in ('facilitator', 'participant'));
 
 -- Keep updated_at fresh.
 create or replace function public.touch_updated_at()

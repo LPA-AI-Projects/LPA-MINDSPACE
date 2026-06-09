@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
 
-const EDIT_ROLES = new Set(['facilitator', 'co_facilitator', 'participant']);
+const EDIT_ROLES = new Set(['facilitator', 'participant']);
 
 function getDisplayName(user) {
   if (!user) return 'Guest';
@@ -120,7 +120,7 @@ async function loadSessionScopedBoard(sessionId, userId) {
           session_id: sessionId,
           user_id: userId,
           role: defaultRole,
-          can_override_workspace: defaultRole === 'facilitator' || defaultRole === 'co_facilitator',
+          can_override_workspace: defaultRole === 'facilitator',
         })
         .select('role, can_override_workspace')
         .single();

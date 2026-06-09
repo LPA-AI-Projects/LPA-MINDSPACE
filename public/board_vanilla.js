@@ -66,6 +66,112 @@ function isReadOnlyMode() {
   return !canEditBoard;
 }
 
+function getLiveBoardAccess() {
+  return window.boardAccess || boardAccess;
+}
+
+function isFacilitator() {
+  const access = getLiveBoardAccess();
+  if (!access.sessionId) return true;
+  return access.role === 'facilitator';
+}
+
+function isParticipant() {
+  const access = getLiveBoardAccess();
+  return !!access.sessionId && access.role === 'participant';
+}
+
+function objectOwnerId(obj) {
+  return obj?.ownerId || null;
+}
+
+function isUnownedObject(obj) {
+  return !objectOwnerId(obj);
+}
+
+function canEditObject(obj) {
+  if (!obj || isReadOnlyMode()) return false;
+  if (isFacilitator()) return true;
+  if (isUnownedObject(obj)) return false;
+  return objectOwnerId(obj) === getLiveBoardAccess().userId;
+}
+
+function canSelectObjectForEdit(obj) {
+  return canEditObject(obj);
+}
+
+function stampOwner(obj) {
+  if (!obj || obj.ownerId) return obj;
+  const userId = getLiveBoardAccess().userId;
+  if (userId) obj.ownerId = userId;
+  return obj;
+}
+
+function notifyNotYourWork() {
+  showToast('Not your work');
+}
+
+function guardEditObject(obj) {
+  if (canEditObject(obj)) return true;
+  notifyNotYourWork();
+  return false;
+}
+
+let objectCopyClipboard = [];
+
+function cloneObjectWithNewOwner(obj, offsetX = 20, offsetY = 20) {
+  const copy = { ...obj, id: uid(), ownerId: getLiveBoardAccess().userId };
+  if (obj.x != null) copy.x = (obj.x || 0) + offsetX;
+  if (obj.y != null) copy.y = (obj.y || 0) + offsetY;
+  if (obj.x2 !== undefined) {
+    copy.x2 = (obj.x2 || 0) + offsetX;
+    copy.y2 = (obj.y2 || 0) + offsetY;
+  }
+  if (obj.type === 'stroke' && obj.points) {
+    copy.points = obj.points.map((p) => ({ x: p.x + offsetX, y: p.y + offsetY }));
+  }
+  if (copy.zIndex == null && typeof nextZIndex === 'function') copy.zIndex = nextZIndex();
+  return copy;
+}
+
+function copyObjectsToClipboard(ids) {
+  objectCopyClipboard = ids
+    .map((id) => state.objects.find((o) => o.id === id))
+    .filter(Boolean)
+    .map((obj) => JSON.parse(JSON.stringify(obj)));
+}
+
+function renderObjectFromData(obj) {
+  if (obj.type === 'sticky') return renderStickyFromObj(obj);
+  if (obj.type === 'text') return addTextToCanvas(obj);
+  if (obj.type === 'shape') return renderShapeObj(obj);
+  if (obj.type === 'image') return renderImageObj(obj);
+  if (obj.type === 'stroke') return addStrokeToSvg(getDrawingSvg(), obj);
+  return null;
+}
+
+function pasteObjectsFromClipboard(offsetX = 24, offsetY = 24) {
+  if (!objectCopyClipboard.length) {
+    showToast('Nothing to paste');
+    return [];
+  }
+  const pasted = [];
+  objectCopyClipboard.forEach((template, index) => {
+    const copy = cloneObjectWithNewOwner(template, offsetX + index * 12, offsetY + index * 12);
+    state.objects.push(copy);
+    renderObjectFromData(copy);
+    pasted.push(copy);
+  });
+  updateObjectCount();
+  History.push();
+  saveToStorage();
+  return pasted;
+}
+
+function isBoardAdmin() {
+  return isFacilitator();
+}
+
 // ═══════════════════════════════════════════════════
 // TRANSFORM
 // ═══════════════════════════════════════════════════
@@ -445,14 +551,14 @@ function endStroke() {
     strokeSvgEl?.remove();
     return;
   }
-  const obj = {
+  const obj = stampOwner({
     id: uid(),
     type: 'stroke',
     points: [...currentPoints],
     color: penState.color,
     width: penState.width,
     opacity: penState.opacity,
-  };
+  });
   state.objects.push(obj);
   strokeSvgEl.remove();
   const pathEl = addStrokeToSvg(getDrawingSvg(), obj);
@@ -491,7 +597,7 @@ function placeText(e) {
 
   // create obj immediately and render via addTextToCanvas
   // this ensures all new text nodes have handles from the start
-  const obj = {
+  const obj = stampOwner({
     id: uid(),
     type: 'text',
     x: wp.x, y: wp.y,
@@ -501,7 +607,7 @@ function placeText(e) {
     fontStyle:  currentTextStyle.fontStyle,
     color:      currentTextStyle.color,
     w: null, h: null, // auto-size until resized
-  };
+  });
 
   state.objects.push(obj);
   updateObjectCount();
@@ -564,7 +670,7 @@ function doErase(e) {
   // ── Erase strokes by checking stored points (fast, no getTotalLength) ──
   const toRemove = new Set();
   state.objects.forEach(obj => {
-    if (obj.type !== 'stroke') return;
+    if (obj.type !== 'stroke' || !canEditObject(obj)) return;
     for (let i = 0; i < obj.points.length; i++) {
       const dx = obj.points[i].x - wx;
       const dy = obj.points[i].y - wy;
@@ -592,9 +698,12 @@ function doErase(e) {
     if (e.clientX >= r.left && e.clientX <= r.right &&
         e.clientY >= r.top  && e.clientY <= r.bottom) {
       const id = el.dataset.objId;
+      const obj = state.objects.find((o) => o.id === id);
+      if (!obj || !canEditObject(obj)) return;
       el.remove();
       state.objects = state.objects.filter(o => o.id !== id);
       updateObjectCount();
+      state.erasedSomething = true;
     }
   });
 }
@@ -655,7 +764,7 @@ document.addEventListener('keydown', ev => {
 
       selectedIds.forEach(id => {
         const obj = state.objects.find(o => o.id === id);
-        if (!obj || obj.locked) return;
+        if (!obj || obj.locked || !canEditObject(obj)) return;
         if (obj.type === 'stroke') {
           obj.points = obj.points.map(p => ({ x:p.x+dx, y:p.y+dy }));
           const pathEl = document.querySelector(`path[data-obj-id="${id}"]`);
@@ -697,6 +806,26 @@ document.addEventListener('keydown', ev => {
   // undo / redo
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'z' && !ev.shiftKey) { undo(); return; }
   if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'Z' || (ev.key === 'z' && ev.shiftKey) || ev.key === 'y')) { ev.preventDefault(); redo(); return; }
+
+  // copy objects
+  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'c') {
+    if (selectedIds.size > 0) {
+      ev.preventDefault();
+      copyObjectsToClipboard([...selectedIds]);
+      showToast(`Copied ${objectCopyClipboard.length} object${objectCopyClipboard.length === 1 ? '' : 's'}`);
+    }
+    return;
+  }
+
+  // paste objects
+  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'v') {
+    if (objectCopyClipboard.length > 0) {
+      ev.preventDefault();
+      const pasted = pasteObjectsFromClipboard();
+      if (pasted.length) showToast(`Pasted ${pasted.length} object${pasted.length === 1 ? '' : 's'}`);
+    }
+    return;
+  }
 
   // delete
   if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSelectedObj(); return; }
@@ -902,6 +1031,7 @@ function addTextToCanvas(obj) {
 
     rh.addEventListener('mousedown', ev => {
       ev.stopPropagation(); ev.preventDefault();
+      if (!guardEditObject(obj)) return;
       // init size if not set
       if (!obj.w) obj.w = wrap.offsetWidth;
       if (!obj.h) obj.h = wrap.offsetHeight;
@@ -947,6 +1077,7 @@ function addTextToCanvas(obj) {
   // double-click to switch to text tool and edit
   wrap.addEventListener('dblclick', ev => {
     ev.stopPropagation();
+    if (!guardEditObject(obj)) return;
     editable.contentEditable = 'true';
     editable.focus();
     // select all text
@@ -989,7 +1120,8 @@ function deleteSelected() {
 
 function selectAll() {
   clearAllSelections();
-  state.objects.forEach(obj => {
+  const editableObjects = state.objects.filter((obj) => canSelectObjectForEdit(obj));
+  editableObjects.forEach(obj => {
     selectedIds.add(obj.id);
     // apply visual selection highlight per type
     const sticky = document.querySelector(`.sticky-note[data-obj-id="${obj.id}"]`);
@@ -1002,7 +1134,7 @@ function selectAll() {
     if (txt) txt.style.border = '1.5px solid #2e9d91';
   });
   updateSelToolbar();
-  showToast(`Selected ${state.objects.length} objects`);
+  showToast(`Selected ${editableObjects.length} object${editableObjects.length === 1 ? '' : 's'}`);
 }
 
 function toggleGrid() {
@@ -1016,8 +1148,10 @@ function toggleGrid() {
 }
 
 function saveBoardName(val) {
+  if (!isBoardAdmin()) return;
   state.boardName = val || 'LPA MindSpace';
   document.title = state.boardName + ' — LPA MindSpace';
+  saveToStorage();
 }
 
 function updateObjectCount() {
@@ -1033,7 +1167,43 @@ function uid() {
 // ═══════════════════════════════════════════════════
 function exportBoard() { showExportMenu(document.querySelector('[onclick="showExportMenu(this)"]')); }
 
+function getSessionLink() {
+  const access = getLiveBoardAccess();
+  if (!access.sessionId || !access.boardId) return null;
+  const params = new URLSearchParams();
+  params.set('session', access.sessionId);
+  params.set('board', String(access.boardId));
+  params.set('mode', 'edit');
+  return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+}
+
+function copySessionLink() {
+  if (!isFacilitator()) {
+    showToast('Only the facilitator can copy the session link');
+    return;
+  }
+  const link = getSessionLink();
+  if (!link) {
+    showToast('Open a training session first');
+    return;
+  }
+  copyText(link);
+  showToast('Session link copied');
+}
+
+function updateFacilitatorUi() {
+  const sessionBtn = document.getElementById('copy-session-link-btn');
+  if (!sessionBtn) return;
+  const access = getLiveBoardAccess();
+  const showSessionLink = isFacilitator() && !!access.sessionId && !!access.boardId;
+  sessionBtn.classList.toggle('visible', showSessionLink);
+}
+
 function shareBoard() {
+  if (!isBoardAdmin()) {
+    showToast('Only the facilitator can manage sharing');
+    return;
+  }
   ensureShareDefaults();
   const panel = document.getElementById('share-dialog');
   panel.classList.add('visible');
@@ -1077,6 +1247,10 @@ function copyShareLink() {
 }
 
 function sendBoardInvite() {
+  if (!isBoardAdmin()) {
+    showToast('Only the facilitator can invite people');
+    return;
+  }
   ensureShareDefaults();
   const emailInput = document.getElementById('share-email-input');
   const invitePerm = document.getElementById('share-invite-permission').value === 'edit' ? 'edit' : 'view';
@@ -1098,6 +1272,10 @@ function sendBoardInvite() {
 }
 
 function revokeBoardAccess(email) {
+  if (!isBoardAdmin()) {
+    showToast('Only the facilitator can revoke access');
+    return;
+  }
   ensureShareDefaults();
   state.sharing.invites = state.sharing.invites.filter((entry) => entry.email !== email);
   renderShareDialog();
@@ -1582,12 +1760,19 @@ function applyAccessModeUi() {
   const avatar = document.querySelector('.tb-avatar');
   if (avatar) avatar.textContent = ((boardAccess.userName || 'U')[0] || 'U').toUpperCase();
 
+  const boardNameInput = document.getElementById('boardName');
+  if (boardNameInput && isParticipant()) {
+    boardNameInput.setAttribute('readonly', 'readonly');
+    boardNameInput.style.opacity = '0.85';
+  }
+
+  updateFacilitatorUi();
+
   if (!isReadOnlyMode()) return;
 
   document.body.classList.add('read-only-mode');
   state.tool = 'hand';
   document.body.className = 'tool-hand read-only-mode';
-  const boardNameInput = document.getElementById('boardName');
   if (boardNameInput) {
     boardNameInput.setAttribute('readonly', 'readonly');
     boardNameInput.style.opacity = '0.8';
@@ -1721,11 +1906,15 @@ const selToolbar = document.getElementById('sel-toolbar');
 
 // ─── Core: select one object (or add to multi-select with ctrl)
 function selectObject(id, addToSelection) {
-  if (!addToSelection) clearAllSelections();
-  selectedIds.add(id);
-
   const obj = state.objects.find(o => o.id === id);
   if (!obj) return;
+  if (!canSelectObjectForEdit(obj)) {
+    notifyNotYourWork();
+    return;
+  }
+
+  if (!addToSelection) clearAllSelections();
+  selectedIds.add(id);
 
   if (obj.type === 'sticky') {
     const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
@@ -1852,6 +2041,11 @@ function handleSelectMousedown(e) {
 function startObjDrag(e, clickedId) {
   // check if the clicked object is locked
   const clickedObj = state.objects.find(o => o.id === clickedId);
+  if (clickedObj && !canEditObject(clickedObj)) {
+    notifyNotYourWork();
+    e.stopPropagation();
+    return;
+  }
   if (clickedObj && clickedObj.locked) {
     showToast('🔒 Locked — right-click to unlock');
     e.stopPropagation();
@@ -1894,7 +2088,7 @@ function startObjDrag(e, clickedId) {
     selectedIds.forEach(id => {
       const obj = state.objects.find(o => o.id === id);
       const sp  = startPositions[id];
-      if (!obj || !sp) return;
+      if (!obj || !sp || !canEditObject(obj)) return;
 
       if (obj.type === 'stroke') {
         obj.points = sp.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
@@ -1981,19 +2175,29 @@ function applyBoxSelect(bx, by, bw, bh) {
   // stickies
   document.querySelectorAll('.sticky-note').forEach(el => {
     if (overlaps(el.getBoundingClientRect())) {
-      selectObject(el.dataset.objId, true); hit = true;
+      const obj = state.objects.find((o) => o.id === el.dataset.objId);
+      if (obj && canSelectObjectForEdit(obj)) {
+        selectObject(el.dataset.objId, true);
+        hit = true;
+      }
     }
   });
   // text nodes
   document.querySelectorAll('.canvas-text').forEach(el => {
     if (overlaps(el.getBoundingClientRect())) {
-      selectObject(el.dataset.objId, true); hit = true;
+      const obj = state.objects.find((o) => o.id === el.dataset.objId);
+      if (obj && canSelectObjectForEdit(obj)) {
+        selectObject(el.dataset.objId, true);
+        hit = true;
+      }
     }
   });
   // shapes
   document.querySelectorAll('.shape-obj').forEach(el => {
     if (overlaps(el.getBoundingClientRect())) {
       const id = el.dataset.objId;
+      const obj = state.objects.find((o) => o.id === id);
+      if (!obj || !canSelectObjectForEdit(obj)) return;
       selectedIds.add(id);
       el.classList.add('selected-shape');
       hit = true;
@@ -2003,6 +2207,8 @@ function applyBoxSelect(bx, by, bw, bh) {
   document.querySelectorAll('.image-obj').forEach(el => {
     if (overlaps(el.getBoundingClientRect())) {
       const id = el.dataset.objId;
+      const obj = state.objects.find((o) => o.id === id);
+      if (!obj || !canSelectObjectForEdit(obj)) return;
       selectedIds.add(id);
       el.classList.add('selected-image');
       hit = true;
@@ -2010,7 +2216,7 @@ function applyBoxSelect(bx, by, bw, bh) {
   });
   // strokes — check each point
   state.objects.forEach(obj => {
-    if (obj.type !== 'stroke') return;
+    if (obj.type !== 'stroke' || !canSelectObjectForEdit(obj)) return;
     const inBox = obj.points.some(p => {
       const sp = worldToScreen(p.x, p.y);
       return sp.x >= bx && sp.x <= bx+bw && sp.y >= by && sp.y <= by+bh;
@@ -2024,7 +2230,15 @@ function applyBoxSelect(bx, by, bw, bh) {
 // ─── Delete all selected
 function deleteSelectedObj() {
   if (selectedIds.size === 0) return;
-  selectedIds.forEach(id => {
+  const deletableIds = [...selectedIds].filter((id) => {
+    const obj = state.objects.find((o) => o.id === id);
+    return obj && canEditObject(obj);
+  });
+  if (!deletableIds.length) {
+    notifyNotYourWork();
+    return;
+  }
+  deletableIds.forEach(id => {
     canvasWorld.querySelector(`.sticky-note[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.canvas-text[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.shape-obj[data-obj-id="${id}"]`)?.remove();
@@ -2048,7 +2262,7 @@ function duplicateSelectedObj() {
   selectedIds.forEach(id => {
     const obj = state.objects.find(o => o.id === id);
     if (!obj) return;
-    const copy = { ...obj, id: uid(), x: obj.x + 24, y: obj.y + 24, zIndex: nextZIndex ? nextZIndex() : 10 };
+    const copy = cloneObjectWithNewOwner(obj, 24, 24);
     state.objects.push(copy);
     toSelect.push(copy.id);
     if (obj.type === 'sticky') {
@@ -2290,6 +2504,7 @@ function endShapeDraw(e) {
   shapePreviewEl?.remove();
   shapePreviewEl = null;
 
+  stampOwner(obj);
   state.objects.push(obj);
   updateObjectCount();
   renderShapeObj(obj);
@@ -2732,6 +2947,11 @@ function renderShapeObj(obj) {
 
 // ── Select a shape
 function selectShapeObj(id, el, addMode) {
+  const obj = state.objects.find((o) => o.id === id);
+  if (!obj || !canSelectObjectForEdit(obj)) {
+    notifyNotYourWork();
+    return;
+  }
   if (!addMode) clearAllSelections();
   selectedShapeId = id;
   selectedIds.add(id);
@@ -2798,7 +3018,7 @@ function syncLineShapeAppearance(el, obj) {
 function applyShapeFill(id, color) {
   const obj = state.objects.find(o => o.id === id);
   const el  = document.querySelector(`.shape-obj[data-obj-id="${id}"]`);
-  if (!obj || !el) return;
+  if (!obj || !el || !guardEditObject(obj)) return;
   obj.fill = color;
   if (el._updateShapeSvg) el._updateShapeSvg();
   if (el._label) el._label.style.color = color === '#141414' ? '#ffffff' : '#141414';
@@ -2808,7 +3028,7 @@ function applyShapeFill(id, color) {
 function applyShapeStroke(id, color) {
   const obj = state.objects.find(o => o.id === id);
   const el  = document.querySelector(`.shape-obj[data-obj-id="${id}"]`);
-  if (!obj || !el) return;
+  if (!obj || !el || !guardEditObject(obj)) return;
   obj.stroke = color;
   if (el._updateShapeSvg) el._updateShapeSvg();
   else if (shapeIsLine(obj.shapeType)) syncLineShapeAppearance(el, obj);
@@ -2832,8 +3052,7 @@ function duplicateSelectedShape() {
   if (!selectedShapeId) return;
   const obj = state.objects.find(o => o.id === selectedShapeId);
   if (!obj) return;
-  const copy = { ...obj, id: uid(), x: obj.x+24, y: obj.y+24 };
-  if (obj.x2 !== undefined) { copy.x2 = obj.x2+24; copy.y2 = obj.y2+24; }
+  const copy = cloneObjectWithNewOwner(obj, 24, 24);
   state.objects.push(copy);
   updateObjectCount();
   renderShapeObj(copy);
@@ -2899,7 +3118,7 @@ function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
   const cx = (window.innerWidth  / 2 - state.panX) / state.zoom;
   const cy = (window.innerHeight / 2 - state.panY) / state.zoom;
 
-  const obj = {
+  const obj = stampOwner({
     id: uid(),
     type: 'image',
     x: cx - w / 2,
@@ -2908,7 +3127,7 @@ function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
     src: dataUrl,
     naturalW, naturalH,
     opacity: 1,
-  };
+  });
 
   state.objects.push(obj);
   updateObjectCount();
@@ -3023,6 +3242,11 @@ function renderImageObj(obj) {
 
 // ── Select image
 function selectImageObj(id, addMode) {
+  const obj = state.objects.find((o) => o.id === id);
+  if (!obj || !canSelectObjectForEdit(obj)) {
+    notifyNotYourWork();
+    return;
+  }
   if (!addMode) clearAllSelections();
   selectedImageId = id;
   selectedIds.add(id);
@@ -3091,7 +3315,7 @@ function duplicateSelectedImage() {
   if (!selectedImageId) return;
   const obj = state.objects.find(o => o.id === selectedImageId);
   if (!obj) return;
-  const copy = { ...obj, id: uid(), x: obj.x + 24, y: obj.y + 24 };
+  const copy = cloneObjectWithNewOwner(obj, 24, 24);
   state.objects.push(copy);
   updateObjectCount();
   renderImageObj(copy);
@@ -3220,7 +3444,7 @@ function loadImageFile(file, dropX, dropY) {
         const scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
         const w = Math.round(img.naturalWidth  * scale);
         const h = Math.round(img.naturalHeight * scale);
-        const obj = {
+        const obj = stampOwner({
           id: uid(), type: 'image',
           x: wp.x - w / 2, y: wp.y - h / 2,
           w, h,
@@ -3228,7 +3452,7 @@ function loadImageFile(file, dropX, dropY) {
           naturalW: img.naturalWidth,
           naturalH: img.naturalHeight,
           opacity: 1,
-        };
+        });
         state.objects.push(obj);
         updateObjectCount();
         renderImageObj(obj);
@@ -4624,6 +4848,7 @@ function convertStrokeToShape(strokeId, recognized) {
       fill: 'none', stroke: '#141414', strokeWidth: 2,
       label: '',
     };
+    stampOwner(obj);
     state.objects.push(obj);
     renderShapeObj(obj);
 
@@ -4642,6 +4867,7 @@ function convertStrokeToShape(strokeId, recognized) {
       fill: '#ffffff', stroke: '#141414', strokeWidth: 1.5,
       label: '',
     };
+    stampOwner(obj);
     state.objects.push(obj);
     renderShapeObj(obj);
   }
@@ -4755,9 +4981,15 @@ function showContextMenu(e) {
   const lockLabel = document.getElementById('ctx-lock-label');
   if (lockLabel) lockLabel.textContent = obj.locked ? 'Unlock' : 'Lock';
 
+  const canEdit = canEditObject(obj);
+
   // disable front/back for strokes (they're in SVG, z-order works differently)
-  document.getElementById('ctx-front').classList.toggle('disabled', obj.type === 'stroke');
-  document.getElementById('ctx-back').classList.toggle('disabled',  obj.type === 'stroke');
+  document.getElementById('ctx-front').classList.toggle('disabled', obj.type === 'stroke' || !canEdit);
+  document.getElementById('ctx-back').classList.toggle('disabled', obj.type === 'stroke' || !canEdit);
+  document.getElementById('ctx-lock')?.classList.toggle('disabled', !canEdit);
+  document.getElementById('ctx-delete')?.classList.toggle('disabled', !canEdit);
+  document.getElementById('ctx-copy')?.classList.remove('disabled');
+  document.getElementById('ctx-duplicate')?.classList.remove('disabled');
 
   // position menu — keep inside viewport
   const menu = document.getElementById('ctx-menu');
@@ -4774,8 +5006,8 @@ function showContextMenu(e) {
     menu.style.top  = Math.max(60, top) + 'px';
   });
 
-  // also select the object
-  if (typeof selectObject === 'function') selectObject(ctxTargetId, false);
+  // select only when the current user can edit it
+  if (canEdit && typeof selectObject === 'function') selectObject(ctxTargetId, false);
 }
 
 function hideContextMenu() {
@@ -4801,32 +5033,24 @@ function ctxAction(action) {
 
   switch (action) {
 
+    case 'copy': {
+      copyObjectsToClipboard([id]);
+      showToast('Copied — press Ctrl+V to paste');
+      break;
+    }
+
     case 'duplicate': {
-      const copy = {
-        ...obj,
-        id: uid(),
-        x: (obj.x || 0) + 20,
-        y: (obj.y || 0) + 20,
-        zIndex: typeof nextZIndex === 'function' ? nextZIndex() : 10,
-      };
-      if (obj.x2 !== undefined) { copy.x2 = (obj.x2||0) + 20; copy.y2 = (obj.y2||0) + 20; }
-      if (obj.type === 'stroke') {
-        copy.points = obj.points.map(p => ({ x: p.x+20, y: p.y+20 }));
-      }
+      const copy = cloneObjectWithNewOwner(obj, 20, 20);
       state.objects.push(copy);
       updateObjectCount();
-      // render
-      if (copy.type === 'sticky')      renderStickyFromObj(copy);
-      else if (copy.type === 'text')   addTextToCanvas(copy);
-      else if (copy.type === 'shape')  renderShapeObj(copy);
-      else if (copy.type === 'image')  renderImageObj(copy);
-      else if (copy.type === 'stroke') addStrokeToSvg(getDrawingSvg(), copy);
+      renderObjectFromData(copy);
       History.push(); saveToStorage();
-      showToast('Duplicated');
+      showToast('Duplicated to your work');
       break;
     }
 
     case 'front': {
+      if (!guardEditObject(obj)) break;
       // bring to front: assign highest zIndex among all DOM objects
       const allEls = canvasWorld.querySelectorAll(
         '.sticky-note, .canvas-text, .shape-obj, .image-obj'
@@ -4846,6 +5070,7 @@ function ctxAction(action) {
     }
 
     case 'back': {
+      if (!guardEditObject(obj)) break;
       // send to back: assign lowest zIndex
       const backEls = canvasWorld.querySelectorAll(
         '.sticky-note, .canvas-text, .shape-obj, .image-obj'
@@ -4865,6 +5090,7 @@ function ctxAction(action) {
     }
 
     case 'lock': {
+      if (!guardEditObject(obj)) break;
       obj.locked = !obj.locked;
       const lockEl = canvasWorld.querySelector(`[data-obj-id="${id}"]`);
       if (lockEl) {
@@ -4882,6 +5108,7 @@ function ctxAction(action) {
     }
 
     case 'delete': {
+      if (!guardEditObject(obj)) break;
       const el = canvasWorld.querySelector(`[data-obj-id="${id}"]`);
       if (el) el.remove();
       document.querySelector(`path[data-obj-id="${id}"]`)?.remove();
@@ -5126,7 +5353,7 @@ Current board has ${state.objects.length} existing objects — new content must 
     await renderAiObjects(parsed.objects);
 
     // update board name if title provided and board is empty
-    if (parsed.title && state.objects.length <= parsed.objects.length) {
+    if (isBoardAdmin() && parsed.title && state.objects.length <= parsed.objects.length) {
       state.boardName = parsed.title;
       document.getElementById('boardName').value = parsed.title;
     }
@@ -5163,11 +5390,12 @@ async function renderAiObjects(objects) {
         text: obj.text || '',
         zIndex: nextZIndex(),
       };
+      stampOwner(sObj);
       state.objects.push(sObj);
       renderStickyFromObj(sObj);
 
     } else if (obj.type === 'text') {
-      const tObj = {
+      const tObj = stampOwner({
         id, type: 'text',
         x: obj.x || 100, y: obj.y || 100,
         content: obj.content || '',
@@ -5175,7 +5403,7 @@ async function renderAiObjects(objects) {
         fontWeight: obj.fontWeight || '500',
         fontStyle: obj.fontStyle || 'normal',
         color: obj.color || '#141414',
-      };
+      });
       state.objects.push(tObj);
       addTextToCanvas(tObj);
 
@@ -5199,6 +5427,7 @@ async function renderAiObjects(objects) {
         strokeWidth: obj.strokeWidth || 1.5,
         label: obj.label || '',
       };
+      stampOwner(sObj);
       state.objects.push(sObj);
       renderShapeObj(sObj);
     }
@@ -5542,7 +5771,7 @@ function placeSticky(e) {
   const wp = screenToWorld(e.clientX, e.clientY);
   // center the note on click point
   const W = 220, H = 180;
-  const obj = {
+  const obj = stampOwner({
     id: uid(),
     type: 'sticky',
     x: wp.x - W/2,
@@ -5552,7 +5781,7 @@ function placeSticky(e) {
     color: stickyLastColor,
     text: '',
     zIndex: nextZIndex(),
-  };
+  });
   state.objects.push(obj);
   updateObjectCount();
   // Don't push history here — wait for blur so place+type = 1 undo step
@@ -5643,7 +5872,14 @@ function renderStickyFromObj(obj) {
   // ── TEXT editing
   const ta = el.querySelector('.sticky-text');
   ta.addEventListener('mousedown', ev => ev.stopPropagation());
+  ta.addEventListener('focus', () => {
+    if (!canEditObject(obj)) {
+      ta.blur();
+      notifyNotYourWork();
+    }
+  });
   ta.addEventListener('input', () => {
+    if (!canEditObject(obj)) return;
     obj.text = ta.value;
     // auto-grow height
     if (ta.scrollHeight > ta.clientHeight + 4) {
@@ -5673,6 +5909,7 @@ function renderStickyFromObj(obj) {
   resizeHandle.addEventListener('mousedown', ev => {
     ev.stopPropagation();
     ev.preventDefault();
+    if (!guardEditObject(obj)) return;
     startStickyResize(ev, el, obj);
   });
 
@@ -5698,6 +5935,11 @@ function escapeHtml(s) {
 
 // ── SELECT
 function selectSticky(id) {
+  const obj = state.objects.find((o) => o.id === id);
+  if (!obj || !canSelectObjectForEdit(obj)) {
+    notifyNotYourWork();
+    return;
+  }
   // use unified selectObject if available
   if (typeof selectObject === 'function') {
     selectObject(id, false);
@@ -5734,6 +5976,7 @@ canvasRoot.addEventListener('mousedown', (e) => {
 
 // ── DRAG
 function startStickyDrag(e, el, obj) {
+  if (!guardEditObject(obj)) return;
   if (obj.locked) { showToast('🔒 Locked — right-click to unlock'); return; }
   // if this sticky is part of a multi-selection, use group drag
   if (selectedIds.size > 1 && selectedIds.has(obj.id)) {
@@ -5852,13 +6095,8 @@ function duplicateSelected() {
   if (!stickyPickerTargetId) return;
   const obj = state.objects.find(o => o.id === stickyPickerTargetId);
   if (!obj) return;
-  const copy = {
-    ...obj,
-    id: uid(),
-    x: obj.x + 20 / state.zoom,
-    y: obj.y + 20 / state.zoom,
-    zIndex: nextZIndex(),
-  };
+  const offset = 20 / state.zoom;
+  const copy = cloneObjectWithNewOwner(obj, offset, offset);
   state.objects.push(copy);
   updateObjectCount();
   renderStickyFromObj(copy);

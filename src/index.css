@@ -165,6 +165,14 @@ body{
   font-weight:600;
 }
 .tb-btn-primary:hover{background:#34b3a6;border-color:#34b3a6;color:#fff}
+.tb-btn-session{
+  display:none;
+  background:rgba(46,157,145,0.14);
+  border-color:rgba(46,157,145,0.45);
+  color:#2e9d91;
+}
+.tb-btn-session:hover{background:rgba(46,157,145,0.24);border-color:#2e9d91;color:#34b3a6}
+.tb-btn-session.visible{display:inline-flex}
 
 .tb-avatar{
   width:30px;height:30px;

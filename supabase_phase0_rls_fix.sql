@@ -84,7 +84,7 @@ as $$
             on sp.session_id = s.id
            and sp.user_id = p_user_id
           where s.board_id = b.id
-            and sp.role in ('facilitator', 'co_facilitator', 'participant')
+            and sp.role in ('facilitator', 'participant')
         )
       )
   );

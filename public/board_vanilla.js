@@ -39,15 +39,18 @@ const ctxHint = document.getElementById('ctx-hint');
 const eraserCursor = document.getElementById('eraser-cursor');
 const selRect = document.getElementById('sel-rect');
 const boardAccess = window.boardAccess || {};
-const canEditBoard = boardAccess.canEdit !== false;
+let realtimeClientId = `${boardAccess.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
 let presenceChannel = null;
 let presenceUsers = [];
 let boardSyncChannel = null;
 let boardSyncChannelReady = false;
-const realtimeClientId = `${boardAccess.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
 let lastPublishedBoardState = null;
 const remoteCollabClients = new Map();
 let collabPresenceHeartbeat = null;
+
+function canEditBoardNow() {
+  return getLiveBoardAccess().canEdit !== false;
+}
 
 /** This script loads dynamically after login; DOMContentLoaded may have already fired. */
 function whenDomReady(fn) {
@@ -63,7 +66,7 @@ function whenDomReady(fn) {
 }
 
 function isReadOnlyMode() {
-  return !canEditBoard;
+  return !canEditBoardNow();
 }
 
 function getLiveBoardAccess() {
@@ -1399,6 +1402,8 @@ window.addEventListener('beforeunload', saveToStorage);
 // INIT
 // ═══════════════════════════════════════════════════
 function init() {
+  const access = getLiveBoardAccess();
+  realtimeClientId = `${access.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
   applyTransform();
   loadFromStorage();
   lastPublishedBoardState = getCurrentBoardState();
@@ -1579,11 +1584,12 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
 
 async function pullLatestBoardStateFromSupabase() {
   try {
-    if (!window.supabaseClient || !boardAccess.boardId) return;
+    const access = getLiveBoardAccess();
+    if (!window.supabaseClient || !access.boardId) return;
     const { data, error } = await window.supabaseClient
       .from('boards')
       .select('state')
-      .eq('id', boardAccess.boardId)
+      .eq('id', access.boardId)
       .single();
     if (error || !data?.state) return;
     applyRemoteBoardState(data.state, 'latest');
@@ -1591,16 +1597,17 @@ async function pullLatestBoardStateFromSupabase() {
 }
 
 function initRealtimeBoardSync() {
-  if (!window.supabaseClient || !boardAccess.boardId) return;
-  const channelName = boardAccess.sessionId
-    ? `session-sync-${boardAccess.sessionId}`
-    : `board-sync-${boardAccess.boardId}`;
+  const access = getLiveBoardAccess();
+  if (!window.supabaseClient || !access.boardId) return;
+  const channelName = access.sessionId
+    ? `session-sync-${access.sessionId}`
+    : `board-sync-${access.boardId}`;
   boardSyncChannel = window.supabaseClient.channel(channelName);
   boardSyncChannelReady = false;
   boardSyncChannel.on('broadcast', { event: 'board_resync_request' }, ({ payload }) => {
     if (!payload || payload.requesterId === realtimeClientId) return;
     // Any editor can answer with latest snapshot; observers are read-only responders.
-    if (!canEditBoard) return;
+    if (!canEditBoardNow()) return;
     publishBoardStateUpdate({ targetClientId: payload.requesterId, reason: 'resync' });
   });
   boardSyncChannel.on('broadcast', { event: 'board_resync_state' }, ({ payload }) => {
@@ -1636,7 +1643,7 @@ function initRealtimeBoardSync() {
       event: 'UPDATE',
       schema: 'public',
       table: 'boards',
-      filter: `id=eq.${boardAccess.boardId}`,
+      filter: `id=eq.${access.boardId}`,
     },
     (payload) => {
       applyRemoteBoardState(payload?.new?.state, 'collab');
@@ -1693,7 +1700,7 @@ function requestRealtimeResync() {
 }
 
 function publishBoardStateUpdate({ targetClientId = null, reason = 'state' } = {}) {
-  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId || !canEditBoard) return;
+  if (!boardSyncChannel || !boardSyncChannelReady || !getLiveBoardAccess().boardId || !canEditBoardNow()) return;
   const snapshot = sanitizeSnapshotForSync(cloneBoardStateSnapshot());
   lastPublishedBoardState = cloneBoardStateSnapshot();
   boardSyncChannel.send({
@@ -1821,7 +1828,7 @@ function applyRemoteBoardOps(ops, meta = {}) {
 }
 
 function publishBoardDeltaUpdate() {
-  if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId || !canEditBoard) return;
+  if (!boardSyncChannel || !boardSyncChannelReady || !getLiveBoardAccess().boardId || !canEditBoardNow()) return;
   const nextState = cloneBoardStateSnapshot();
   const previousState = lastPublishedBoardState || nextState;
   const ops = buildBoardOps(previousState, nextState);
@@ -1937,15 +1944,16 @@ function renderPresence() {
 }
 
 function initRealtimePresence() {
-  if (!window.supabaseClient || !boardAccess.boardId) return;
+  const access = getLiveBoardAccess();
+  if (!window.supabaseClient || !access.boardId) return;
   if (presenceChannel) {
     presenceChannel.unsubscribe();
     presenceChannel = null;
   }
 
-  const channelName = boardAccess.sessionId
-    ? `presence-session-${boardAccess.sessionId}`
-    : `presence-board-${boardAccess.boardId}`;
+  const channelName = access.sessionId
+    ? `presence-session-${access.sessionId}`
+    : `presence-board-${access.boardId}`;
   presenceChannel = window.supabaseClient.channel(channelName, {
     config: { presence: { key: realtimeClientId } },
   });

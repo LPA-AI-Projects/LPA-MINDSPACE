@@ -4,12 +4,9 @@ import Board from './Board'
 import {
   buildSessionUrl,
   getSessionIdFromPath,
-  isRootPath,
   normalizeSessionSlug,
 } from './sessionRoutes'
 import './index.css'
-
-const PENDING_SESSION_KEY = 'lpa-pending-session'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -33,30 +30,15 @@ function App() {
     return () => subscription.unsubscribe();
   }, [])
 
-  useEffect(() => {
-    if (!session) return
-    const pathSlug = getSessionIdFromPath()
-    if (pathSlug) return
-
-    const pending = sessionStorage.getItem(PENDING_SESSION_KEY)
-    if (!pending) return
-
-    sessionStorage.removeItem(PENDING_SESSION_KEY)
-    window.location.replace(buildSessionUrl(pending))
-  }, [session])
-
   const handleLogin = async (e) => {
     e.preventDefault()
     setLoading(true)
 
-    const sessionSlug = normalizeSessionSlug(joinSession)
-    if (sessionSlug && isRootPath()) {
-      sessionStorage.setItem(PENDING_SESSION_KEY, sessionSlug)
-    }
+    const pathSession = getSessionIdFromPath()
+    const sessionSlug = normalizeSessionSlug(joinSession) || pathSession
 
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) {
-      sessionStorage.removeItem(PENDING_SESSION_KEY)
       if (error.message.includes('Invalid login credentials')) {
          const { data, error: signUpError } = await supabase.auth.signUp({ email, password })
          if (signUpError) {
@@ -71,7 +53,16 @@ function App() {
       } else {
          alert(error.message)
       }
+      setLoading(false)
+      return
     }
+
+    // Full page load so Supabase auth + session board load in the correct order.
+    if (sessionSlug) {
+      window.location.replace(buildSessionUrl(sessionSlug))
+      return
+    }
+
     setLoading(false)
   }
 

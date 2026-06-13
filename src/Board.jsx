@@ -151,8 +151,21 @@ async function loadSessionScopedBoard(sessionId, userId) {
   }
 }
 
+async function loadSessionScopedBoardWithRetry(sessionId, userId, attempts = 4) {
+  for (let i = 0; i < attempts; i += 1) {
+    await supabase.auth.getSession();
+    const result = await loadSessionScopedBoard(sessionId, userId);
+    if (result) return result;
+    if (i < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 350 * (i + 1)));
+    }
+  }
+  return null;
+}
+
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const boardMountRef = useRef(null);
   const boardHtmlMountedRef = useRef(false);
   const currentBoardIdRef = useRef(null);
@@ -161,6 +174,8 @@ export default function Board({ session }) {
   useEffect(() => {
     const loadSession = async () => {
       if (!session) return;
+      setLoadError('');
+      setBoardLoaded(false);
 
       const { sessionId, shareBoardId, shareMode, shareToken } = getQueryParams();
       const userId = session.user.id;
@@ -174,12 +189,24 @@ export default function Board({ session }) {
       const lastBoardId = localStorage.getItem('lpa-last-board-id');
       const lastSessionId = localStorage.getItem('lpa-last-session-id');
 
-      const sessionScoped = await loadSessionScopedBoard(sessionId || lastSessionId, userId);
-      if (sessionScoped) {
+      if (sessionId) {
+        const sessionScoped = await loadSessionScopedBoardWithRetry(sessionId, userId);
+        if (!sessionScoped) {
+          setLoadError('Could not join this session yet. Please refresh the page or try again in a moment.');
+          return;
+        }
         boardRecord = sessionScoped.boardRecord;
         role = sessionScoped.role;
         canOverrideWorkspace = sessionScoped.canOverrideWorkspace;
         resolvedSessionId = sessionScoped.sessionRow.id;
+      } else {
+        const sessionScoped = await loadSessionScopedBoardWithRetry(lastSessionId, userId);
+        if (sessionScoped) {
+          boardRecord = sessionScoped.boardRecord;
+          role = sessionScoped.role;
+          canOverrideWorkspace = sessionScoped.canOverrideWorkspace;
+          resolvedSessionId = sessionScoped.sessionRow.id;
+        }
       }
 
       if (!boardRecord && shareBoardId) {
@@ -321,6 +348,23 @@ export default function Board({ session }) {
     boardMountRef.current.innerHTML = boardHtml;
     boardHtmlMountedRef.current = true;
   }, [boardLoaded]);
+
+  if (loadError) {
+    return (
+      <div style={{ background: '#141414', height: '100vh', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24, textAlign: 'center' }}>
+        <div>
+          <p style={{ marginBottom: 16 }}>{loadError}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{ padding: '10px 16px', borderRadius: 6, background: '#2e9d91', color: '#fff', border: 'none', cursor: 'pointer' }}
+          >
+            Refresh page
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!boardLoaded) {
     return (

@@ -1599,6 +1599,15 @@ async function pullLatestBoardStateFromSupabase() {
 function initRealtimeBoardSync() {
   const access = getLiveBoardAccess();
   if (!window.supabaseClient || !access.boardId) return;
+  if (boardSyncChannel) {
+    boardSyncChannel.unsubscribe();
+    boardSyncChannel = null;
+    boardSyncChannelReady = false;
+    if (collabPresenceHeartbeat) {
+      clearInterval(collabPresenceHeartbeat);
+      collabPresenceHeartbeat = null;
+    }
+  }
   const channelName = access.sessionId
     ? `session-sync-${access.sessionId}`
     : `board-sync-${access.boardId}`;
@@ -6462,4 +6471,14 @@ function scheduleInitStickyColorPicker() {
   }
 }
 scheduleInitStickyColorPicker();
+
+window.__LPA_BOARD_VANILLA_LOADED__ = true;
+window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
+  restoreCanvasIfDomWasCleared();
+  applyTransform();
+  applyAccessModeUi();
+  initRealtimeBoardSync();
+  initRealtimePresence();
+  pullLatestBoardStateFromSupabase();
+};
 

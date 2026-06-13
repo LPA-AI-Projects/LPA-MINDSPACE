@@ -171,15 +171,18 @@ export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
   const boardMountRef = useRef(null);
-  const boardHtmlMountedRef = useRef(false);
+  const hasLoadedOnceRef = useRef(false);
   const currentBoardIdRef = useRef(null);
   const currentSessionIdRef = useRef(null);
 
   useEffect(() => {
+    let cancelled = false;
     const loadSession = async () => {
-      if (!session) return;
-      setLoadError('');
-      setBoardLoaded(false);
+      if (!session?.user?.id) return;
+      if (!hasLoadedOnceRef.current) {
+        setLoadError('');
+        setBoardLoaded(false);
+      }
 
       const { sessionId, shareBoardId, shareMode, shareToken } = getQueryParams();
       const userId = session.user.id;
@@ -302,11 +305,16 @@ export default function Board({ session }) {
         }
       };
 
+      if (cancelled) return;
+      hasLoadedOnceRef.current = true;
       setBoardLoaded(true);
     };
 
     loadSession();
-  }, [session]);
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -329,28 +337,27 @@ export default function Board({ session }) {
   useEffect(() => {
     if (!boardLoaded) return;
 
+    if (window.__LPA_BOARD_VANILLA_LOADED__) {
+      window.__LPA_BOARD_REINIT__?.();
+      return undefined;
+    }
+    if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
+
     const script = document.createElement('script');
+    script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
     document.body.appendChild(script);
 
-    return () => { 
-      if (document.body.contains(script)) {
-         document.body.removeChild(script); 
-      }
-      delete window.supabaseClient;
-      delete window.boardAccess;
-      delete window.supabaseStorageSave;
-      delete window.supabaseInitialState;
-    };
+    return undefined;
   }, [boardLoaded]);
 
-  // Mount shell HTML once — re-running dangerouslySetInnerHTML on every render
-  // (e.g. after Supabase TOKEN_REFRESHED on tab focus) wipes the canvas DOM.
+  // Mount shell HTML when the mount node is empty (e.g. after a brief React remount).
   useEffect(() => {
-    if (!boardLoaded || !boardMountRef.current || boardHtmlMountedRef.current) return;
+    if (!boardLoaded || !boardMountRef.current) return;
+    if (boardMountRef.current.querySelector('#canvas-world')) return;
     boardMountRef.current.innerHTML = boardHtml;
-    boardHtmlMountedRef.current = true;
+    window.__LPA_BOARD_REINIT__?.();
   }, [boardLoaded]);
 
   if (loadError) {

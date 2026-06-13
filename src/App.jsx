@@ -24,7 +24,11 @@ function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       // Token refresh on tab focus must not re-render Board (that wiped the canvas).
       if (event === 'TOKEN_REFRESHED') return;
-      setSession(nextSession);
+      setSession((prev) => {
+        if (!nextSession) return null;
+        if (prev?.user?.id === nextSession.user?.id) return prev;
+        return nextSession;
+      });
     });
 
     return () => subscription.unsubscribe();

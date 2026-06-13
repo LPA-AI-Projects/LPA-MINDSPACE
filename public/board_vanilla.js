@@ -47,6 +47,15 @@ let boardSyncChannelReady = false;
 let lastPublishedBoardState = null;
 const remoteCollabClients = new Map();
 let collabPresenceHeartbeat = null;
+let sessionRoster = [];
+let activityPanelOpen = false;
+let followClientId = null;
+let activityHeartbeatTimer = null;
+let activityPanelRefreshTimer = null;
+let activityRosterChannel = null;
+let lastPresenceCursorX = null;
+let lastPresenceCursorY = null;
+let viewportPresenceTimer = null;
 
 function canEditBoardNow() {
   return getLiveBoardAccess().canEdit !== false;
@@ -219,6 +228,8 @@ function zoomTo(newZoom, cx, cy) {
   state.panY = cy - ratio * (cy - state.panY);
   state.zoom = newZoom;
   applyTransform();
+  breakFollowOnUserViewportChange();
+  scheduleViewportPresencePublish();
 }
 
 function zoomIn()  { zoomTo(state.zoom * (1 + ZOOM_STEP)); }
@@ -290,6 +301,7 @@ let panStart = null;
 let nudgeTimer = null;
 
 function startPan(e) {
+  breakFollowOnUserViewportChange();
   state.isPanning = true;
   document.body.classList.add('panning');
   panStart = { x: e.clientX - state.panX, y: e.clientY - state.panY };
@@ -306,6 +318,8 @@ function endPan() {
   state.isPanning = false;
   document.body.classList.remove('panning');
   panStart = null;
+  breakFollowOnUserViewportChange();
+  scheduleViewportPresencePublish();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1192,10 +1206,413 @@ function copySessionLink() {
 
 function updateFacilitatorUi() {
   const sessionBtn = document.getElementById('copy-session-link-btn');
-  if (!sessionBtn) return;
+  if (sessionBtn) {
+    const access = getLiveBoardAccess();
+    const showSessionLink = isFacilitator() && !!access.sessionId && !!access.boardId;
+    sessionBtn.classList.toggle('visible', showSessionLink);
+  }
+
+  const activityBtn = document.getElementById('activity-panel-btn');
+  if (activityBtn) {
+    const access = getLiveBoardAccess();
+    activityBtn.classList.toggle('visible', !!access.sessionId);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// PARTICIPANT ACTIVITY PANEL (Phase 2/5)
+// ═══════════════════════════════════════════════════
+
+function canNavigateToParticipant() {
   const access = getLiveBoardAccess();
-  const showSessionLink = isFacilitator() && !!access.sessionId && !!access.boardId;
-  sessionBtn.classList.toggle('visible', showSessionLink);
+  return !!access.sessionId && (isFacilitator() || isParticipant());
+}
+
+function canFollowParticipant() {
+  return isFacilitator() && !!getLiveBoardAccess().sessionId;
+}
+
+function formatLastActivity(iso, isOnline) {
+  if (isOnline) return 'Active now';
+  if (!iso) return 'Last seen unknown';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'Last seen unknown';
+  const diffSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (diffSec < 60) return 'Active just now';
+  if (diffSec < 3600) return `Last seen ${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `Last seen ${Math.floor(diffSec / 3600)}h ago`;
+  return `Last seen ${Math.floor(diffSec / 86400)}d ago`;
+}
+
+function getDisplayNameForUserId(userId) {
+  const access = getLiveBoardAccess();
+  if (userId === access.userId) return access.userName || access.userEmail || 'You';
+  for (const client of remoteCollabClients.values()) {
+    if (client.userId === userId && client.name) return client.name;
+  }
+  for (const user of presenceUsers) {
+    if (user.userId === userId && user.name) return user.name;
+  }
+  const rosterEntry = sessionRoster.find((row) => row.user_id === userId);
+  if (rosterEntry?.displayName) return rosterEntry.displayName;
+  return 'Participant';
+}
+
+function getLiveClientsForUser(userId) {
+  pruneStaleCollabClients();
+  const cutoff = Date.now() - 30000;
+  return Array.from(remoteCollabClients.values())
+    .filter((client) => client.userId === userId && (client.updatedAt || 0) >= cutoff)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+function getBestClientForUser(userId) {
+  const liveClients = getLiveClientsForUser(userId);
+  if (liveClients.length) return liveClients[0];
+  return Array.from(remoteCollabClients.values())
+    .filter((client) => client.userId === userId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+}
+
+function isUserOnline(userId) {
+  if (getLiveClientsForUser(userId).length) return true;
+  const row = sessionRoster.find((entry) => entry.user_id === userId);
+  if (!row?.last_seen_at) return false;
+  return Date.now() - new Date(row.last_seen_at).getTime() < 120000;
+}
+
+function buildActivityEntries() {
+  const access = getLiveBoardAccess();
+  const byUser = new Map();
+
+  sessionRoster.forEach((row) => {
+    byUser.set(row.user_id, {
+      userId: row.user_id,
+      role: row.role || 'participant',
+      lastSeenAt: row.last_seen_at,
+      name: getDisplayNameForUserId(row.user_id),
+      isSelf: row.user_id === access.userId,
+    });
+  });
+
+  if (access.userId && !byUser.has(access.userId)) {
+    byUser.set(access.userId, {
+      userId: access.userId,
+      role: access.role || 'participant',
+      lastSeenAt: new Date().toISOString(),
+      name: access.userName || access.userEmail || 'You',
+      isSelf: true,
+    });
+  }
+
+  remoteCollabClients.forEach((client) => {
+    if (!client.userId || client.userId === access.userId) return;
+    if (!byUser.has(client.userId)) {
+      byUser.set(client.userId, {
+        userId: client.userId,
+        role: 'participant',
+        lastSeenAt: null,
+        name: client.name || 'Participant',
+        isSelf: false,
+      });
+    }
+  });
+
+  return Array.from(byUser.values())
+    .map((entry) => ({
+      ...entry,
+      isOnline: isUserOnline(entry.userId),
+      client: getBestClientForUser(entry.userId),
+    }))
+    .sort((a, b) => {
+      if (a.isSelf) return -1;
+      if (b.isSelf) return 1;
+      if (a.role === 'facilitator' && b.role !== 'facilitator') return -1;
+      if (b.role === 'facilitator' && a.role !== 'facilitator') return 1;
+      if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+}
+
+async function fetchSessionRoster() {
+  const access = getLiveBoardAccess();
+  if (!window.supabaseClient || !access.sessionId) {
+    sessionRoster = [];
+    return;
+  }
+  const { data, error } = await window.supabaseClient
+    .from('session_participants')
+    .select('user_id, role, last_seen_at')
+    .eq('session_id', access.sessionId);
+  if (error) {
+    console.error('[activity] roster fetch failed', error.message);
+    return;
+  }
+  sessionRoster = data || [];
+  if (activityPanelOpen) renderActivityPanel();
+}
+
+function subscribeSessionRoster() {
+  const access = getLiveBoardAccess();
+  if (!window.supabaseClient || !access.sessionId) return;
+  if (activityRosterChannel) {
+    activityRosterChannel.unsubscribe();
+    activityRosterChannel = null;
+  }
+  activityRosterChannel = window.supabaseClient
+    .channel(`activity-roster-${access.sessionId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'session_participants',
+        filter: `session_id=eq.${access.sessionId}`,
+      },
+      () => {
+        fetchSessionRoster();
+      },
+    )
+    .subscribe();
+}
+
+async function touchSessionHeartbeat() {
+  const access = getLiveBoardAccess();
+  if (!window.supabaseClient || !access.sessionId || !access.userId) return;
+  await window.supabaseClient
+    .from('session_participants')
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq('session_id', access.sessionId)
+    .eq('user_id', access.userId);
+}
+
+function startActivityHeartbeat() {
+  if (activityHeartbeatTimer) clearInterval(activityHeartbeatTimer);
+  const access = getLiveBoardAccess();
+  if (!access.sessionId) return;
+  touchSessionHeartbeat();
+  activityHeartbeatTimer = setInterval(() => {
+    touchSessionHeartbeat();
+  }, 45000);
+}
+
+function startActivityPanelRefresh() {
+  if (activityPanelRefreshTimer) clearInterval(activityPanelRefreshTimer);
+  activityPanelRefreshTimer = setInterval(() => {
+    if (!activityPanelOpen) return;
+    renderActivityPanel();
+  }, 5000);
+}
+
+function initActivityPanel() {
+  const access = getLiveBoardAccess();
+  if (!access.sessionId) return;
+  fetchSessionRoster();
+  subscribeSessionRoster();
+  startActivityHeartbeat();
+  startActivityPanelRefresh();
+  updateFacilitatorUi();
+}
+
+function toggleActivityPanel() {
+  const access = getLiveBoardAccess();
+  if (!access.sessionId) {
+    showToast('Open a training session to see participants');
+    return;
+  }
+  if (activityPanelOpen) {
+    closeActivityPanel();
+    return;
+  }
+  closeShareDialog();
+  activityPanelOpen = true;
+  document.getElementById('activity-panel')?.classList.add('visible');
+  document.getElementById('panel-backdrop').style.display = 'block';
+  fetchSessionRoster().then(() => renderActivityPanel());
+}
+
+function closeActivityPanel() {
+  activityPanelOpen = false;
+  document.getElementById('activity-panel')?.classList.remove('visible');
+  if (!document.getElementById('share-dialog')?.classList.contains('visible')) {
+    document.getElementById('panel-backdrop').style.display = 'none';
+  }
+}
+
+function renderActivityPanel() {
+  const list = document.getElementById('activity-participant-list');
+  const banner = document.getElementById('activity-follow-banner');
+  if (!list) return;
+
+  const entries = buildActivityEntries();
+  const onlineCount = entries.filter((entry) => entry.isOnline).length;
+  const subtitle = document.getElementById('activity-panel-subtitle');
+  if (subtitle) {
+    subtitle.textContent = `${onlineCount} active · ${entries.length} in session`;
+  }
+
+  if (banner) {
+    if (followClientId) {
+      const followed = entries.find((entry) => entry.client?.clientId === followClientId);
+      const followedName = followed?.name || 'participant';
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <span>Following ${escapeHtml(followedName)}</span>
+        <button type="button" class="activity-follow-stop" onclick="stopFollowingParticipant()">Stop</button>
+      `;
+    } else {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+    }
+  }
+
+  if (!entries.length) {
+    list.innerHTML = '<div class="activity-detail">No participants yet.</div>';
+    return;
+  }
+
+  list.innerHTML = entries.map((entry) => {
+    const color = userColorFromId(entry.userId);
+    const initial = (entry.name || '?').slice(0, 1).toUpperCase();
+    const roleLabel = entry.role === 'facilitator' ? 'Facilitator' : 'Participant';
+    const activityLabel = formatLastActivity(entry.lastSeenAt, entry.isOnline);
+    const isFollowing = !!followClientId && entry.client?.clientId === followClientId;
+    const canJump = canNavigateToParticipant() && !entry.isSelf;
+    const canFollow = canFollowParticipant() && !entry.isSelf && entry.isOnline;
+    const jumpDisabled = !canJump || !entry.client;
+    const followLabel = isFollowing ? 'Following' : 'Follow';
+
+    return `
+      <div class="activity-item ${entry.isOnline ? '' : 'is-offline'} ${isFollowing ? 'is-following' : ''}">
+        <div class="activity-item-main" ${canJump ? `onclick="jumpToParticipant('${entry.userId}')"` : ''} title="${canJump ? 'Jump to this participant' : ''}">
+          <div class="activity-avatar" style="background:${color}">
+            ${initial}
+            <span class="activity-avatar-dot ${entry.isOnline ? 'online' : ''}"></span>
+          </div>
+          <div class="activity-meta">
+            <div class="activity-name">${escapeHtml(entry.isSelf ? `${entry.name} (you)` : entry.name)}</div>
+            <div class="activity-detail">${roleLabel} · ${activityLabel}</div>
+          </div>
+        </div>
+        <div class="activity-actions">
+          ${canJump ? (jumpDisabled
+    ? '<button type="button" class="activity-btn" disabled title="Not visible right now">Jump</button>'
+    : `<button type="button" class="activity-btn" onclick="event.stopPropagation(); jumpToParticipant('${entry.userId}')" title="Jump to cursor">Jump</button>`) : ''}
+          ${canFollow ? `<button type="button" class="activity-btn activity-btn-primary" onclick="event.stopPropagation(); ${isFollowing ? 'stopFollowingParticipant()' : `startFollowingParticipant('${entry.client?.clientId || ''}')`}">${followLabel}</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function navigateToScreenPoint(sx, sy) {
+  const wx = (sx - state.panX) / state.zoom;
+  const wy = (sy - state.panY) / state.zoom;
+  state.panX = window.innerWidth / 2 - wx * state.zoom;
+  state.panY = window.innerHeight / 2 - wy * state.zoom;
+  applyTransform();
+}
+
+function navigateToParticipantViewport(client) {
+  if (!client) return false;
+  if (Number.isFinite(client.panX) && Number.isFinite(client.panY) && Number.isFinite(client.zoom)) {
+    state.panX = client.panX;
+    state.panY = client.panY;
+    state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, client.zoom));
+    applyTransform();
+    return true;
+  }
+  if (Number.isFinite(client.cursorX) && Number.isFinite(client.cursorY)) {
+    navigateToScreenPoint(client.cursorX, client.cursorY);
+    return true;
+  }
+  return false;
+}
+
+function highlightPresenceCursor(clientId) {
+  if (!clientId) return;
+  const layer = document.getElementById('presence-layer');
+  if (!layer) return;
+  const cursor = layer.querySelector(`[data-client-id="${clientId}"]`);
+  if (!cursor) return;
+  cursor.classList.add('is-highlighted');
+  setTimeout(() => cursor.classList.remove('is-highlighted'), 1800);
+}
+
+function jumpToParticipant(userId) {
+  if (!canNavigateToParticipant()) {
+    showToast('Only session members can jump to participants');
+    return;
+  }
+  const client = getBestClientForUser(userId);
+  if (!client) {
+    showToast('This participant is not visible right now');
+    return;
+  }
+  if (!navigateToParticipantViewport(client)) {
+    showToast('This participant has no cursor or viewport yet');
+    return;
+  }
+  highlightPresenceCursor(client.clientId);
+  const name = getDisplayNameForUserId(userId);
+  showToast(`Jumped to ${name}`);
+}
+
+function startFollowingParticipant(clientId) {
+  if (!canFollowParticipant()) {
+    showToast('Only the facilitator can follow participants');
+    return;
+  }
+  if (!clientId || !remoteCollabClients.has(clientId)) {
+    showToast('Participant is not live right now');
+    return;
+  }
+  followClientId = clientId;
+  const client = remoteCollabClients.get(clientId);
+  navigateToParticipantViewport(client);
+  renderActivityPanel();
+  showToast(`Following ${client?.name || 'participant'}`);
+}
+
+function stopFollowingParticipant() {
+  if (!followClientId) return;
+  followClientId = null;
+  renderActivityPanel();
+  showToast('Stopped following');
+}
+
+function breakFollowOnUserViewportChange() {
+  if (!followClientId) return;
+  followClientId = null;
+  if (activityPanelOpen) renderActivityPanel();
+}
+
+function applyFollowViewportIfNeeded() {
+  if (!followClientId) return;
+  const client = remoteCollabClients.get(followClientId);
+  if (!client) {
+    followClientId = null;
+    if (activityPanelOpen) renderActivityPanel();
+    return;
+  }
+  if (Number.isFinite(client.panX) && Number.isFinite(client.panY) && Number.isFinite(client.zoom)) {
+    state.panX = client.panX;
+    state.panY = client.panY;
+    state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, client.zoom));
+    applyTransform();
+    return;
+  }
+  if (Number.isFinite(client.cursorX) && Number.isFinite(client.cursorY)) {
+    navigateToScreenPoint(client.cursorX, client.cursorY);
+  }
+}
+
+function scheduleViewportPresencePublish() {
+  if (viewportPresenceTimer) return;
+  viewportPresenceTimer = setTimeout(() => {
+    viewportPresenceTimer = null;
+    publishCollabPresence(lastPresenceCursorX, lastPresenceCursorY);
+  }, 350);
 }
 
 function shareBoard() {
@@ -1203,6 +1620,7 @@ function shareBoard() {
     showToast('Only the facilitator can manage sharing');
     return;
   }
+  closeActivityPanel();
   ensureShareDefaults();
   const panel = document.getElementById('share-dialog');
   panel.classList.add('visible');
@@ -1410,6 +1828,7 @@ function init() {
   applyAccessModeUi();
   initRealtimePresence();
   initRealtimeBoardSync();
+  initActivityPanel();
   showHint('Welcome to LPA MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
@@ -1641,10 +2060,15 @@ function initRealtimeBoardSync() {
       color: payload.color || userColorFromId(payload.clientId),
       cursorX: payload.cursorX,
       cursorY: payload.cursorY,
+      panX: payload.panX,
+      panY: payload.panY,
+      zoom: payload.zoom,
       updatedAt: payload.updatedAt || Date.now(),
     });
     pruneStaleCollabClients();
     renderPresence();
+    applyFollowViewportIfNeeded();
+    if (activityPanelOpen) renderActivityPanel();
   });
   boardSyncChannel.on(
     'postgres_changes',
@@ -1665,7 +2089,7 @@ function initRealtimeBoardSync() {
       requestRealtimeResync();
       publishCollabPresence(null, null);
       if (collabPresenceHeartbeat) clearInterval(collabPresenceHeartbeat);
-      collabPresenceHeartbeat = setInterval(() => publishCollabPresence(null, null), 4000);
+      collabPresenceHeartbeat = setInterval(() => publishCollabPresence(lastPresenceCursorX, lastPresenceCursorY), 4000);
     }
   });
 }
@@ -1690,6 +2114,9 @@ function publishCollabPresence(cursorX, cursorY) {
       color: userColorFromId(realtimeClientId),
       cursorX: Number.isFinite(cursorX) ? cursorX : null,
       cursorY: Number.isFinite(cursorY) ? cursorY : null,
+      panX: state.panX,
+      panY: state.panY,
+      zoom: state.zoom,
       updatedAt: Date.now(),
     },
   });
@@ -1919,6 +2346,9 @@ function buildPresencePayload(cursorX = null, cursorY = null) {
     color: userColorFromId(realtimeClientId),
     cursorX,
     cursorY,
+    panX: state.panX,
+    panY: state.panY,
+    zoom: state.zoom,
   };
 }
 
@@ -1945,11 +2375,12 @@ function renderPresence() {
   layer.innerHTML = others
     .filter((u) => Number.isFinite(u.cursorX) && Number.isFinite(u.cursorY))
     .map((u) => `
-      <div class="presence-cursor" style="left:${u.cursorX}px;top:${u.cursorY}px">
+      <div class="presence-cursor" data-client-id="${u.clientId}" style="left:${u.cursorX}px;top:${u.cursorY}px">
         <div class="presence-cursor-dot" style="background:${u.color}"></div>
         <div class="presence-cursor-label" style="background:${u.color}">${u.name}</div>
       </div>
     `).join('');
+  if (activityPanelOpen) renderActivityPanel();
 }
 
 function initRealtimePresence() {
@@ -1977,6 +2408,7 @@ function initRealtimePresence() {
     });
     presenceUsers = users;
     renderPresence();
+    if (activityPanelOpen) renderActivityPanel();
   });
 
   presenceChannel.on('presence', { event: 'join' }, ({ newPresences }) => {
@@ -2000,6 +2432,8 @@ function initRealtimePresence() {
 let presenceMoveTimer = null;
 document.addEventListener('mousemove', (ev) => {
   if (presenceMoveTimer) return;
+  lastPresenceCursorX = ev.clientX;
+  lastPresenceCursorY = ev.clientY;
   presenceMoveTimer = setTimeout(() => {
     presenceMoveTimer = null;
     publishCollabPresence(ev.clientX, ev.clientY);
@@ -4625,6 +5059,7 @@ function navigateToMinimap(e) {
   state.panX = window.innerWidth  / 2 - wx * state.zoom;
   state.panY = window.innerHeight / 2 - wy * state.zoom;
   applyTransform();
+  breakFollowOnUserViewportChange();
   drawMinimap();
 }
 
@@ -5997,6 +6432,7 @@ function closeAllPanels() {
   document.getElementById('board-info-panel').classList.remove('visible');
   document.getElementById('about-panel').classList.remove('visible');
   document.getElementById('share-dialog').classList.remove('visible');
+  closeActivityPanel();
 }
 
 // ── Track board creation date
@@ -6479,6 +6915,8 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   applyAccessModeUi();
   initRealtimeBoardSync();
   initRealtimePresence();
+  initActivityPanel();
   pullLatestBoardStateFromSupabase();
+  if (activityPanelOpen) renderActivityPanel();
 };
 

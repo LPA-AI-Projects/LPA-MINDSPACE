@@ -93,9 +93,6 @@ async function loadSessionScopedBoard(sessionId, userId) {
 
     if (!sessionRow?.board_id) return null;
 
-    const boardRecord = await fetchBoardById(sessionRow.board_id);
-    if (!boardRecord) return null;
-
     const facilitatorIds = Array.isArray(sessionRow.facilitator_ids) ? sessionRow.facilitator_ids : [];
     const defaultRole = sessionRow.created_by === userId || facilitatorIds.includes(userId)
       ? 'facilitator'
@@ -139,14 +136,21 @@ async function loadSessionScopedBoard(sessionId, userId) {
         .eq('user_id', userId);
     }
 
+    // Board RLS requires session membership — fetch only after participant row exists.
+    const boardRecord = await fetchBoardById(sessionRow.board_id);
+    if (!boardRecord) {
+      logSessionError('load board', new Error(`board ${sessionRow.board_id} not accessible after join`));
+      return null;
+    }
+
     return {
       boardRecord,
       sessionRow,
       role: participant?.role || defaultRole,
       canOverrideWorkspace: !!participant?.can_override_workspace,
     };
-  } catch (_e) {
-    // If schema is not migrated yet, fallback to legacy board mode.
+  } catch (err) {
+    logSessionError('load session scoped board', err);
     return null;
   }
 }

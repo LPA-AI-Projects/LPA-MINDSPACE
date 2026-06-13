@@ -5339,40 +5339,74 @@ const AI_MAX_TEXT_CHARS = 120;
 const AI_MAX_LABEL_CHARS = 60;
 
 const AI_BLOCKED_PROMPT_PATTERNS = [
-  /\b(html|css|javascript|typescript|python|java|c\+\+|react|vue|angular|node\.?js)\b/i,
-  /\b(chat\s*bot|chatbot|web\s*app|website|landing\s*page)\b/i,
-  /\b(full\s+(app|application|code|program|software)|complete\s+(app|application|html|code))\b/i,
-  /\b(runnable|executable|deployable)\b/i,
-  /\b(mobile\s*app|android\s*app|ios\s*app)\b/i,
-  /<!DOCTYPE|<html[\s>]|<script[\s>]/i,
-  /\b(write|generate|create|build)\s+(me\s+)?(a\s+)?(code|coding|program|script)\b/i,
-  /\b(api\s+endpoint|rest\s+api|database\s+schema|sql\s+query)\b/i,
-  /\b(spring\s*boot|django|flask|express\.js|next\.js|laravel)\b/i,
+  /\b(html|css|javascript|typescript|python|java|c\+\+|c#|php|ruby|go\s*lang|kotlin|swift)\b/i,
+  /\b(chat\s*bot|chatbot|web\s*app|webapp|website|web\s*site|landing\s*page)\b/i,
+  /\b(full\s+(app|application|code|program|software)|complete\s+(app|application|html|code|program))\b/i,
+  /\b(runnable|executable|deployable|production[\s-]ready)\b/i,
+  /\b(mobile\s*app|android\s*app|ios\s*app|desktop\s*app)\b/i,
+  /<!DOCTYPE|<html[\s>]|<head[\s>]|<body[\s>]|<script[\s>]|<style[\s>]|<div[\s>]|<form[\s>]/i,
+  /\b(write|generate|create|build|make|develop|code|program)\b[^.]{0,40}\b(app|application|software|program|script|bot|chatbot|website|html|api)\b/i,
+  /\b(api\s+endpoint|rest\s+api|graphql|database\s+schema|sql\s+query|backend|frontend)\b/i,
+  /\b(spring\s*boot|django|flask|express\.js|next\.js|laravel|react\s*native|vue\.js|angular)\b/i,
+  /\b(saas|microservice|docker|kubernetes|npm\s+install|package\.json|node_modules)\b/i,
+  /\bcode\s+for\b|\bapp\s+for\b|\bbot\s+for\b|\bprogram\s+for\b/i,
+];
+
+const AI_ALLOWED_INTENT_PATTERNS = [
+  /\b(flow\s*chart|flowchart|diagram|process|workflow|procedure)\b/i,
+  /\b(brainstorm|mind\s*map|mindmap|idea|ideation|think\s*of)\b/i,
+  /\b(matrix|grid|quadrant|2\s*x\s*2|priority|funnel|pyramid)\b/i,
+  /\b(journey|roadmap|timeline|swimlane|kanban|sprint|retro|retrospective)\b/i,
+  /\b(checklist|template|agenda|outline|framework|structure|organize)\b/i,
+  /\b(sticky|stickies|note|notes|post[\s-]it)\b/i,
+  /\b(step|steps|phase|phases|stage|stages|sequence)\b/i,
+  /\b(onboarding|training|workshop|meeting|session|lesson|module)\b/i,
+  /\b(summary|summarize|overview|plan|strategy|goals|objectives)\b/i,
+  /\b(team|group|cluster|categor|sort|compare|pros\s+and\s+cons)\b/i,
+  /\b(customer|user|employee|stakeholder|learner|participant)\b/i,
+  /\b(chart|map|layout|visual|draw|sketch|design\s+on\s+the\s+board)\b/i,
 ];
 
 const AI_CODE_LIKE_OUTPUT = [
   /<!DOCTYPE/i,
   /<html[\s>]/i,
+  /<head[\s>]/i,
+  /<body[\s>]/i,
   /<script[\s>]/i,
   /<\/script>/i,
+  /<style[\s>]/i,
+  /<div[\s>]/i,
+  /<form[\s>]/i,
+  /<input[\s>]/i,
+  /<button[\s>]/i,
   /function\s+\w+\s*\(/,
   /import\s+.+from\s+['"]/,
   /export\s+default/,
+  /document\.(getElementById|querySelector)/,
+  /addEventListener\s*\(/,
 ];
 
-function getAiBlockedPromptReason(text) {
-  if (!text || typeof text !== 'string') return 'Prompt is required';
-  const trimmed = text.trim();
-  if (!trimmed) return 'Prompt is required';
+function evaluateAiPrompt(prompt) {
+  const trimmed = (prompt || '').trim();
+  if (!trimmed) return { allowed: false, reason: 'Prompt is required' };
   if (trimmed.length > AI_PROMPT_MAX_CHARS) {
-    return `Prompt too long (max ${AI_PROMPT_MAX_CHARS} characters)`;
+    return { allowed: false, reason: `Prompt too long (max ${AI_PROMPT_MAX_CHARS} characters)` };
   }
   for (const pattern of AI_BLOCKED_PROMPT_PATTERNS) {
     if (pattern.test(trimmed)) {
-      return 'Board AI is for flowcharts, diagrams, and brainstorming — not code or full applications.';
+      return { allowed: false, reason: 'Board AI is for flowcharts, diagrams, and brainstorming — not code or full applications.' };
     }
   }
-  return null;
+  const hasAllowedIntent = AI_ALLOWED_INTENT_PATTERNS.some((pattern) => pattern.test(trimmed));
+  if (!hasAllowedIntent) {
+    return { allowed: false, reason: 'Board AI only creates diagrams, flowcharts, brainstorm stickies, and templates. Try: "create a 5-step onboarding flowchart".' };
+  }
+  return { allowed: true };
+}
+
+function getAiBlockedPromptReason(text) {
+  const result = evaluateAiPrompt(text);
+  return result.allowed ? null : result.reason;
 }
 
 function truncateAiText(text, maxLen) {
@@ -5384,7 +5418,8 @@ function truncateAiText(text, maxLen) {
 
 function aiOutputLooksLikeCode(text) {
   if (!text || typeof text !== 'string') return false;
-  return AI_CODE_LIKE_OUTPUT.some((pattern) => pattern.test(text));
+  if (AI_CODE_LIKE_OUTPUT.some((pattern) => pattern.test(text))) return true;
+  return (text.match(/<[a-z][a-z0-9]*[\s>]/gi) || []).length >= 2;
 }
 
 function sanitizeAiBoardResponse(parsed) {
@@ -5392,13 +5427,16 @@ function sanitizeAiBoardResponse(parsed) {
   const allowedTypes = new Set(['sticky', 'text', 'shape']);
   const objects = Array.isArray(parsed.objects) ? parsed.objects.slice(0, AI_MAX_OBJECTS) : [];
   const sanitized = [];
+  let codeLikeCount = 0;
 
   objects.forEach((obj) => {
     if (!obj || !allowedTypes.has(obj.type)) return;
 
     if (obj.type === 'sticky') {
-      let text = truncateAiText(obj.text || '', AI_MAX_STICKY_CHARS);
-      if (aiOutputLooksLikeCode(text)) {
+      const raw = obj.text || '';
+      if (aiOutputLooksLikeCode(raw)) codeLikeCount += 1;
+      let text = truncateAiText(raw, AI_MAX_STICKY_CHARS);
+      if (aiOutputLooksLikeCode(raw)) {
         text = 'Content trimmed — board AI creates diagrams and stickies, not code. Try a flowchart prompt.';
       }
       sanitized.push({ ...obj, text });
@@ -5406,8 +5444,10 @@ function sanitizeAiBoardResponse(parsed) {
     }
 
     if (obj.type === 'text') {
-      let content = truncateAiText(obj.content || '', AI_MAX_TEXT_CHARS);
-      if (aiOutputLooksLikeCode(content)) {
+      const raw = obj.content || '';
+      if (aiOutputLooksLikeCode(raw)) codeLikeCount += 1;
+      let content = truncateAiText(raw, AI_MAX_TEXT_CHARS);
+      if (aiOutputLooksLikeCode(raw)) {
         content = 'Use board AI for short labels, not code.';
       }
       sanitized.push({ ...obj, content });
@@ -5415,22 +5455,32 @@ function sanitizeAiBoardResponse(parsed) {
     }
 
     if (obj.type === 'shape') {
-      sanitized.push({ ...obj, label: truncateAiText(obj.label || '', AI_MAX_LABEL_CHARS) });
+      const raw = obj.label || '';
+      if (aiOutputLooksLikeCode(raw)) codeLikeCount += 1;
+      sanitized.push({ ...obj, label: truncateAiText(raw, AI_MAX_LABEL_CHARS) });
     }
   });
+
+  if (codeLikeCount > 0 && sanitized.length > 1) {
+    return {
+      title: '',
+      objects: [{
+        type: 'sticky',
+        color: 'orange',
+        text: 'Board AI is for diagrams, flowcharts, and brainstorming — not full code or apps. Try: create a 5-step onboarding flowchart',
+        x: 100,
+        y: 100,
+        w: 300,
+        h: 160,
+      }],
+    };
+  }
 
   return {
     title: truncateAiText(parsed.title || '', 80),
     objects: sanitized,
   };
 }
-
-const AI_SCOPE_RULES = `SCOPE (strict):
-- ONLY whiteboard objects: stickies, short text labels, shapes, arrows, lines.
-- NEVER output HTML, CSS, JavaScript, or any executable code.
-- NEVER build websites, apps, chatbots, or software — redirect the user to diagram/brainstorm use cases.
-- Maximum ${AI_MAX_OBJECTS} objects. Sticky text max ${AI_MAX_STICKY_CHARS} chars. Shape labels max 8 words.
-- Good requests: flowcharts, process diagrams, mind maps, matrices, journey maps, brainstorm stickies, checklists, templates.`;
 
 /** Same-origin API in production; never use localhost on a public HTTPS site. */
 function getApiBase() {
@@ -5562,74 +5612,24 @@ async function submitAiPrompt() {
   showAiLoading('Thinking…');
 
   try {
-    const systemPrompt = `You are a whiteboard layout assistant for LPA MindSpace, a corporate training tool.
-${AI_SCOPE_RULES}
-The user will ask you to generate content for a whiteboard board.
-You must respond with ONLY a valid JSON object — no explanation, no markdown, no backticks.
-
-The JSON must have this exact structure:
-{
-  "title": "short board title",
-  "objects": [ ...array of objects... ]
-}
-
-Each object can be one of these types:
-
-1. STICKY NOTE:
-{ "type": "sticky", "color": "yellow|orange|pink|red|teal|blue|purple|green|white|charcoal",
-  "text": "content", "x": 100, "y": 100, "w": 200, "h": 160 }
-
-2. TEXT LABEL:
-{ "type": "text", "content": "label text", "x": 100, "y": 100,
-  "fontSize": 18, "fontWeight": "600", "color": "#141414" }
-
-3. SHAPE:
-{ "type": "shape", "shapeType": "rect|circle|diamond|triangle|hexagon|parallelogram",
-  "x": 100, "y": 100, "w": 160, "h": 80,
-  "fill": "#ffffff", "stroke": "#141414", "strokeWidth": 1.5, "label": "text inside" }
-
-4. ARROW (connector):
-{ "type": "shape", "shapeType": "arrow",
-  "x": 100, "y": 100, "x2": 300, "y2": 100,
-  "stroke": "#141414", "strokeWidth": 2, "fill": "none", "label": "" }
-
-5. LINE:
-{ "type": "shape", "shapeType": "line",
-  "x": 100, "y": 100, "x2": 300, "y2": 100,
-  "stroke": "#888888", "strokeWidth": 1.5, "fill": "none", "label": "" }
-
-LAYOUT RULES:
-- Place content starting at x:100, y:100
-- Use 120px horizontal gap between connected shapes, 80px vertical gap
-- Flowcharts: shapes connected top-to-bottom with arrows
-- Mind maps: central topic in center, branches radiating outward
-- Use color purposefully: teal/blue for main items, yellow for insights, orange for warnings
-- Keep labels concise (max 5 words inside shapes)
-- Canvas is infinite so spread content out — don't crowd objects
-- For flowcharts: rect=process, diamond=decision, circle=start/end
-- Title text should be large (fontSize:28, fontWeight:"700") placed at top`;
-
-    // compute where to place new content — to the right of existing content
-    let startX = Math.round(-state.panX/state.zoom + 100);
-    let startY = Math.round(-state.panY/state.zoom + 100);
+    let startX = Math.round(-state.panX / state.zoom + 100);
+    let startY = Math.round(-state.panY / state.zoom + 100);
     if (state.objects.length > 0) {
       const bounds = getBoardBounds();
-      startX = Math.round(bounds.x + bounds.w + 120); // 120px gap after existing content
-      startY = Math.round(bounds.y); // same vertical level
+      startX = Math.round(bounds.x + bounds.w + 120);
+      startY = Math.round(bounds.y);
     }
-
-    const userMsg = `Generate a whiteboard layout for: "${prompt}"
-
-IMPORTANT PLACEMENT RULE: Place ALL objects starting at x:${startX}, y:${startY} and extending rightward/downward from there.
-Do NOT place anything to the left of x:${startX - 50}.
-Current board has ${state.objects.length} existing objects — new content must not overlap them.`;
 
     showAiLoading('Generating your board…');
 
     const response = await postGenerateBoard({
-      systemPrompt: systemPrompt,
-      userMsg: userMsg,
+      prompt,
       mode: 'generate',
+      context: {
+        startX,
+        startY,
+        objectCount: state.objects.length,
+      },
     });
 
     if (!response.ok) {
@@ -5806,30 +5806,18 @@ async function submitSelectionAi() {
   })();
 
   try {
-    const sysPrompt = `You are a whiteboard assistant. The user has selected some objects on their whiteboard and wants to modify them.
-${AI_SCOPE_RULES}
-You will receive the current selected objects as JSON and a modification request.
-Return ONLY a JSON object with this structure (no markdown, no explanation):
-{
-  "action": "replace",
-  "objects": [ ...new objects to place instead of selected ones... ]
-}
-
-Use the same coordinate space as the input objects. Keep new objects within the bounding box of the selection unless the prompt says to expand.
-Same object schema as before: type can be sticky/text/shape with all relevant fields.`;
-
-    const userMsg = `Selected objects: ${JSON.stringify(selObjs, null, 2)}
-
-Selection bounding box: x:${Math.round(selBounds.x)}, y:${Math.round(selBounds.y)}, w:${Math.round(selBounds.w)}, h:${Math.round(selBounds.h)}
-
-User request: "${prompt}"
-
-Replace or modify the selected objects according to the request. Keep them in roughly the same position.`;
-
     const resp = await postGenerateBoard({
-      systemPrompt: sysPrompt,
-      userMsg: userMsg,
+      prompt,
       mode: 'selection',
+      selection: {
+        objects: selObjs,
+        bounds: {
+          x: Math.round(selBounds.x),
+          y: Math.round(selBounds.y),
+          w: Math.round(selBounds.w),
+          h: Math.round(selBounds.h),
+        },
+      },
     });
 
     if (!resp.ok) {

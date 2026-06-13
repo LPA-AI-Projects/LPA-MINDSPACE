@@ -6,8 +6,12 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import {
   AI_LIMITS,
-  SERVER_AI_POLICY,
-  getBlockedPromptReason,
+  BOARD_GENERATE_SYSTEM_PROMPT,
+  BOARD_SELECTION_SYSTEM_PROMPT,
+  buildGenerateUserMessage,
+  evaluateAiPrompt,
+  extractPromptForValidation,
+  sanitizeAiResponseText,
 } from './aiGuardrails.js';
 
 dotenv.config();
@@ -15,7 +19,6 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.join(__dirname, 'dist');
 
-// claude-3-opus-20240229 was retired; override via ANTHROPIC_MODEL in Railway if needed
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
@@ -31,30 +34,46 @@ app.get('/api/health', (_req, res) => {
     hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
     anthropicModel: ANTHROPIC_MODEL,
     anthropicMaxTokens: ANTHROPIC_MAX_TOKENS,
+    aiGuardrails: true,
     hasDist: fs.existsSync(distPath),
   });
 });
 
 app.post('/api/generate-board', async (req, res) => {
   try {
-    const { systemPrompt, userMsg, mode = 'generate' } = req.body;
+    const { prompt, userMsg, mode = 'generate', context = null, selection = null } = req.body;
 
-    const blockReason = getBlockedPromptReason(userMsg);
-    if (blockReason) {
-      return res.status(400).json({ error: blockReason, source: 'guardrail' });
+    const userPrompt = (prompt || '').trim() || extractPromptForValidation(userMsg);
+    const evaluation = evaluateAiPrompt(userPrompt);
+    if (!evaluation.allowed) {
+      return res.status(400).json({ error: evaluation.reason, source: 'guardrail' });
     }
 
-    // In production, fetch this securely from dotenv or secret manager
     const aiApiKey = process.env.ANTHROPIC_API_KEY;
     if (!aiApiKey) {
-       return res.status(500).json({ error: 'API key is missing in backend secrets' });
+      return res.status(500).json({ error: 'API key is missing in backend secrets' });
     }
 
     const maxTokens = mode === 'selection'
       ? Math.min(ANTHROPIC_MAX_TOKENS, AI_LIMITS.maxSelectionTokens)
       : Math.min(ANTHROPIC_MAX_TOKENS, AI_LIMITS.maxOutputTokens);
 
-    const fullSystemPrompt = `${SERVER_AI_POLICY}\n\n${systemPrompt || ''}`;
+    const systemPrompt = mode === 'selection'
+      ? BOARD_SELECTION_SYSTEM_PROMPT
+      : BOARD_GENERATE_SYSTEM_PROMPT;
+
+    let finalUserMsg = userMsg;
+    if (mode === 'generate') {
+      finalUserMsg = buildGenerateUserMessage(userPrompt, context || {});
+    } else if (mode === 'selection' && selection) {
+      finalUserMsg = `Selected objects: ${JSON.stringify(selection.objects || [])}
+
+Selection bounding box: x:${selection.bounds?.x ?? 0}, y:${selection.bounds?.y ?? 0}, w:${selection.bounds?.w ?? 0}, h:${selection.bounds?.h ?? 0}
+
+User request: "${userPrompt}"
+
+Replace or modify the selected objects according to the request. Keep them in roughly the same position.`;
+    }
 
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
@@ -66,8 +85,8 @@ app.post('/api/generate-board', async (req, res) => {
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: maxTokens,
-        system: fullSystemPrompt,
-        messages: [{ role: 'user', content: userMsg }],
+        system: systemPrompt,
+        messages: [{ role: 'user', content: finalUserMsg }],
       }),
     });
 
@@ -87,6 +106,18 @@ app.post('/api/generate-board', async (req, res) => {
     }
 
     const data = await response.json();
+    const rawText = data.content?.[0]?.text || '';
+
+    try {
+      const sanitizedJson = sanitizeAiResponseText(rawText);
+      data.content[0].text = sanitizedJson;
+    } catch (sanitizeErr) {
+      return res.status(422).json({
+        error: sanitizeErr.message || 'AI response was not valid board content',
+        source: 'guardrail',
+      });
+    }
+
     return res.json(data);
   } catch (err) {
     console.error('AI Proxy Error:', err);
@@ -94,7 +125,6 @@ app.post('/api/generate-board', async (req, res) => {
   }
 });
 
-// Production: serve Vite build (same origin as /api for AI proxy)
 if (fs.existsSync(distPath)) {
   app.use(
     express.static(distPath, {
@@ -120,13 +150,10 @@ const server = app.listen(PORT, HOST, () => {
   if (fs.existsSync(distPath)) console.log('Serving static files from dist/');
 });
 
-// Keep the HTTP server referenced so Node doesn't auto-exit.
 if (typeof server.ref === 'function') {
   server.ref();
 }
 
-// Some Windows/node shells may not keep the event loop alive for this listener.
-// Keep a lightweight timer so the backend remains available during dev.
 const serverKeepAlive = setInterval(() => {}, 60 * 60 * 1000);
 
 function shutdown() {

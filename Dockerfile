@@ -19,7 +19,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js ./
+COPY server.js aiGuardrails.js ./
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000

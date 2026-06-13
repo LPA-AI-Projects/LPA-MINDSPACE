@@ -257,9 +257,11 @@ export default function Board({ session }) {
       window.supabaseStorageSave = async (stateObj) => {
         if (!canEdit) return;
         if (boardId) {
-          await supabase.from('boards').update({ state: stateObj }).eq('id', boardId);
+          const { error } = await supabase.from('boards').update({ state: stateObj }).eq('id', boardId);
+          if (error) console.error('[board] Supabase state save failed', error.message);
         } else {
-          const { data: insertData } = await supabase.from('boards').insert({ user_id: userId, state: stateObj }).select();
+          const { data: insertData, error } = await supabase.from('boards').insert({ user_id: userId, state: stateObj }).select();
+          if (error) console.error('[board] Supabase state insert failed', error.message);
           if (insertData && insertData.length > 0) {
             boardId = insertData[0].id;
             window.boardAccess.boardId = boardId;

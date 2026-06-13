@@ -1372,7 +1372,9 @@ function saveToStorage() {
       sharing: state.sharing || null,
     });
     publishBoardDeltaUpdate();
-  } catch(e) {}
+  } catch (e) {
+    console.warn('[board] local save failed (storage may be full)', e);
+  }
 }
 
 function loadFromStorage() {
@@ -1454,6 +1456,27 @@ function cloneBoardStateSnapshot(source) {
   return JSON.parse(JSON.stringify(source || getCurrentBoardState()));
 }
 
+function isInlineImageSrc(src) {
+  return typeof src === 'string' && src.startsWith('data:');
+}
+
+function sanitizeObjForSync(obj) {
+  if (!obj || obj.type !== 'image') return obj;
+  if (isInlineImageSrc(obj.src)) {
+    // Realtime payloads cannot carry multi-MB base64 blobs; peers load via DB resync.
+    return { ...obj, src: '' };
+  }
+  return obj;
+}
+
+function sanitizeSnapshotForSync(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot;
+  return {
+    ...snapshot,
+    objects: (snapshot.objects || []).map(sanitizeObjForSync),
+  };
+}
+
 function applyRemoteBoardState(remoteState, sourceLabel) {
   if (!remoteState || typeof remoteState !== 'object') return;
   let currentSerialized = '';
@@ -1466,11 +1489,26 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   }
   if (!remoteSerialized || remoteSerialized === currentSerialized) return;
 
+  const previousObjects = state.objects || [];
+  const previousById = createObjectMap(previousObjects);
+  const remoteList = Array.isArray(remoteState.objects) ? remoteState.objects : [];
+  const mergedRemoteList = remoteList.map((obj) => {
+    if (obj?.type !== 'image' || obj.src) return obj;
+    const prev = previousById.get(String(obj.id));
+    if (prev?.type === 'image' && prev.src) return { ...obj, src: prev.src };
+    return obj;
+  });
+  const remoteIds = new Set(mergedRemoteList.map((o) => o.id));
+  // Keep images that exist locally but are missing from remote (e.g. DB save still in flight).
+  const localImagesMissingFromRemote = previousObjects.filter(
+    (o) => o.type === 'image' && o.id && !remoteIds.has(o.id) && o.src
+  );
+
   state.boardName = remoteState.boardName || state.boardName || 'LPA MindSpace';
   state.panX = Number.isFinite(remoteState.panX) ? remoteState.panX : 0;
   state.panY = Number.isFinite(remoteState.panY) ? remoteState.panY : 0;
   state.zoom = Number.isFinite(remoteState.zoom) ? remoteState.zoom : 1;
-  state.objects = Array.isArray(remoteState.objects) ? remoteState.objects : [];
+  state.objects = [...mergedRemoteList, ...localImagesMissingFromRemote];
   state.sharing = remoteState.sharing || null;
 
   const boardNameInput = document.getElementById('boardName');
@@ -1601,8 +1639,8 @@ function requestRealtimeResync() {
 
 function publishBoardStateUpdate({ targetClientId = null, reason = 'state' } = {}) {
   if (!boardSyncChannel || !boardSyncChannelReady || !boardAccess.boardId || !canEditBoard) return;
-  const snapshot = cloneBoardStateSnapshot();
-  lastPublishedBoardState = snapshot;
+  const snapshot = sanitizeSnapshotForSync(cloneBoardStateSnapshot());
+  lastPublishedBoardState = cloneBoardStateSnapshot();
   boardSyncChannel.send({
     type: 'broadcast',
     event: reason === 'resync' ? 'board_resync_state' : 'board_state',
@@ -1682,7 +1720,17 @@ function applyRemoteBoardOps(ops, meta = {}) {
     if (op.t === 'upsert' && op.obj) {
       const id = getObjectId(op.obj);
       if (!id) return;
-      objectMap.set(id, op.obj);
+      const existing = objectMap.get(id);
+      if (
+        op.obj.type === 'image' &&
+        !op.obj.src &&
+        existing?.type === 'image' &&
+        existing.src
+      ) {
+        objectMap.set(id, { ...op.obj, src: existing.src });
+      } else {
+        objectMap.set(id, op.obj);
+      }
       changed = true;
       return;
     }
@@ -1730,13 +1778,17 @@ function publishBoardDeltaUpdate() {
     return;
   }
 
+  const syncOps = ops.map((op) => (
+    op.t === 'upsert' && op.obj ? { ...op, obj: sanitizeObjForSync(op.obj) } : op
+  ));
+
   boardSyncChannel.send({
     type: 'broadcast',
     event: 'board_ops',
     payload: {
       boardId: boardAccess.boardId,
       editorId: realtimeClientId,
-      ops,
+      ops: syncOps,
       meta: {
         sentAt: Date.now(),
       },
@@ -3105,27 +3157,110 @@ whenDomReady(() => {
 // ═══════════════════════════════════════════════════
 
 let selectedImageId = null;
+const BOARD_IMAGES_BUCKET = 'board-images';
 
-// ── Place image at center of current viewport
-function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
-  // fit image to reasonable size (max 600px wide)
+function dataUrlToBlob(dataUrl) {
+  const [header, b64] = dataUrl.split(',');
+  const mime = (header.match(/:(.*?);/) || [])[1] || 'image/jpeg';
+  const bytes = atob(b64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i += 1) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+function compressImageDataUrl(dataUrl, maxDim = 1200, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.naturalWidth;
+      let h = img.naturalHeight;
+      const scale = Math.min(1, maxDim / Math.max(w, h, 1));
+      const cw = Math.max(1, Math.round(w * scale));
+      const ch = Math.max(1, Math.round(h * scale));
+      const cv = document.createElement('canvas');
+      cv.width = cw;
+      cv.height = ch;
+      const ctx = cv.getContext('2d');
+      const isPng = dataUrl.includes('image/png');
+      if (!isPng) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cw, ch);
+      }
+      ctx.drawImage(img, 0, 0, cw, ch);
+      resolve({
+        dataUrl: isPng ? cv.toDataURL('image/png') : cv.toDataURL('image/jpeg', quality),
+        naturalW: img.naturalWidth,
+        naturalH: img.naturalHeight,
+      });
+    };
+    img.onerror = () => reject(new Error('Image decode failed'));
+    img.src = dataUrl;
+  });
+}
+
+async function uploadBoardImageDataUrl(dataUrl, objectId) {
+  const client = window.supabaseClient;
+  const boardId = boardAccess.boardId;
+  if (!client || !boardId) return null;
+  try {
+    const blob = dataUrlToBlob(dataUrl);
+    const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+    const path = `${boardId}/${objectId}.${ext}`;
+    const { error } = await client.storage.from(BOARD_IMAGES_BUCKET).upload(path, blob, {
+      upsert: true,
+      cacheControl: '3600',
+      contentType: blob.type || 'image/jpeg',
+    });
+    if (error) {
+      console.error('[board] image upload failed', error.message);
+      return null;
+    }
+    const { data } = client.storage.from(BOARD_IMAGES_BUCKET).getPublicUrl(path);
+    return data?.publicUrl || null;
+  } catch (e) {
+    console.error('[board] image upload failed', e);
+    return null;
+  }
+}
+
+async function resolveImageSrcForBoard(dataUrl, objectId) {
+  try {
+    const compressed = await compressImageDataUrl(dataUrl);
+    const uploaded = await uploadBoardImageDataUrl(compressed.dataUrl, objectId);
+    return {
+      src: uploaded || compressed.dataUrl,
+      naturalW: compressed.naturalW,
+      naturalH: compressed.naturalH,
+      uploaded: !!uploaded,
+    };
+  } catch (e) {
+    console.warn('[board] image compress failed, using original', e);
+    const uploaded = await uploadBoardImageDataUrl(dataUrl, objectId);
+    return { src: uploaded || dataUrl, naturalW: null, naturalH: null, uploaded: !!uploaded };
+  }
+}
+
+async function createImageObjectAtWorldPoint(dataUrl, naturalW, naturalH, worldX, worldY) {
+  showToast('Uploading image…');
+  const objectId = uid();
+  const resolved = await resolveImageSrcForBoard(dataUrl, objectId);
+  const srcNaturalW = resolved.naturalW || naturalW;
+  const srcNaturalH = resolved.naturalH || naturalH;
+
   const maxW = 600;
-  const scale = naturalW > maxW ? maxW / naturalW : 1;
-  const w = Math.round(naturalW * scale);
-  const h = Math.round(naturalH * scale);
-
-  // center in current viewport
-  const cx = (window.innerWidth  / 2 - state.panX) / state.zoom;
-  const cy = (window.innerHeight / 2 - state.panY) / state.zoom;
+  const scale = srcNaturalW > maxW ? maxW / srcNaturalW : 1;
+  const w = Math.round(srcNaturalW * scale);
+  const h = Math.round(srcNaturalH * scale);
 
   const obj = stampOwner({
-    id: uid(),
+    id: objectId,
     type: 'image',
-    x: cx - w / 2,
-    y: cy - h / 2,
+    x: worldX - w / 2,
+    y: worldY - h / 2,
     w, h,
-    src: dataUrl,
-    naturalW, naturalH,
+    src: resolved.src,
+    naturalW: srcNaturalW,
+    naturalH: srcNaturalH,
     opacity: 1,
   });
 
@@ -3136,7 +3271,15 @@ function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
   saveToStorage();
   setTool('select');
   selectImageObj(obj.id);
-  showToast('Image placed');
+  showToast(resolved.uploaded ? 'Image placed' : 'Image placed (saved locally — run storage SQL if sync fails)');
+  return obj;
+}
+
+// ── Place image at center of current viewport
+async function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
+  const cx = (window.innerWidth / 2 - state.panX) / state.zoom;
+  const cy = (window.innerHeight / 2 - state.panY) / state.zoom;
+  await createImageObjectAtWorldPoint(dataUrl, naturalW, naturalH, cx, cy);
 }
 
 // ── Render image object to DOM
@@ -3430,42 +3573,24 @@ document.addEventListener('paste', e => {
   if (file) loadImageFile(file);
 });
 
-// ── Shared: load image file → dataURL → place on canvas
+// ── Shared: load image file → compress → upload → place on canvas
 function loadImageFile(file, dropX, dropY) {
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = (e) => {
     const dataUrl = e.target.result;
     const img = new Image();
     img.onload = () => {
       if (dropX !== undefined && dropY !== undefined) {
-        // place at drop point
         const wp = screenToWorld(dropX, dropY);
-        const maxW = 600;
-        const scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
-        const w = Math.round(img.naturalWidth  * scale);
-        const h = Math.round(img.naturalHeight * scale);
-        const obj = stampOwner({
-          id: uid(), type: 'image',
-          x: wp.x - w / 2, y: wp.y - h / 2,
-          w, h,
-          src: dataUrl,
-          naturalW: img.naturalWidth,
-          naturalH: img.naturalHeight,
-          opacity: 1,
-        });
-        state.objects.push(obj);
-        updateObjectCount();
-        renderImageObj(obj);
-        History.push(); saveToStorage();
-        setTool('select');
-        selectImageObj(obj.id);
-        showToast('Image placed');
+        createImageObjectAtWorldPoint(dataUrl, img.naturalWidth, img.naturalHeight, wp.x, wp.y);
       } else {
         placeImageOnCanvas(dataUrl, img.naturalWidth, img.naturalHeight);
       }
     };
+    img.onerror = () => showToast('Could not load image');
     img.src = dataUrl;
   };
+  reader.onerror = () => showToast('Could not read image file');
   reader.readAsDataURL(file);
 }
 

@@ -1169,12 +1169,8 @@ function exportBoard() { showExportMenu(document.querySelector('[onclick="showEx
 
 function getSessionLink() {
   const access = getLiveBoardAccess();
-  if (!access.sessionId || !access.boardId) return null;
-  const params = new URLSearchParams();
-  params.set('session', access.sessionId);
-  params.set('board', String(access.boardId));
-  params.set('mode', 'edit');
-  return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  if (!access.sessionId) return null;
+  return `${window.location.origin}/${encodeURIComponent(access.sessionId)}`;
 }
 
 function copySessionLink() {

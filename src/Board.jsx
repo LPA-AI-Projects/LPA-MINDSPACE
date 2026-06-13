@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
+import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
 
 const EDIT_ROLES = new Set(['facilitator', 'participant']);
 
@@ -30,7 +31,7 @@ function getQueryParams() {
   const rawBoardId = params.get('board');
   const shareBoardId = rawBoardId && /^\d+$/.test(rawBoardId) ? rawBoardId : null;
   return {
-    sessionId: params.get('session'),
+    sessionId: resolveSessionId(window.location.pathname, window.location.search),
     shareBoardId,
     shareMode: params.get('mode') === 'view' ? 'view' : 'edit',
     shareToken: params.get('token'),
@@ -207,11 +208,12 @@ export default function Board({ session }) {
         localStorage.setItem('lpa-last-board-id', boardId);
         if (resolvedSessionId) localStorage.setItem('lpa-last-session-id', resolvedSessionId);
 
-        // Main board should be tied to concrete session/board context.
-        if (!shareBoardId && boardId && resolvedSessionId) {
-          const desired = `?session=${encodeURIComponent(resolvedSessionId)}&board=${encodeURIComponent(boardId)}&mode=edit`;
-          if (window.location.search !== desired) {
-            window.history.replaceState({}, '', `${window.location.pathname}${desired}`);
+        // Canonical URL: /session-slug (legacy ?session= links are rewritten).
+        if (!shareBoardId && resolvedSessionId) {
+          const desired = buildSessionUrl(resolvedSessionId, { boardId, mode: 'edit' });
+          const current = `${window.location.pathname}${window.location.search}`;
+          if (current !== desired) {
+            window.history.replaceState({}, '', desired);
           }
         }
 
@@ -277,7 +279,7 @@ export default function Board({ session }) {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const hasSessionInUrl = !!params.get('session');
+    const hasSessionInUrl = !!resolveSessionId(window.location.pathname, window.location.search);
     const hasBoardInUrl = !!params.get('board');
     const mode = params.get('mode') || 'edit';
     // Only auto-follow board switches for the main board tab.
@@ -287,8 +289,7 @@ export default function Board({ session }) {
       if (e.key !== 'lpa-last-session-id' || !e.newValue) return;
       const nextSessionId = e.newValue;
       if (nextSessionId === currentSessionIdRef.current) return;
-      const nextUrl = `${window.location.pathname}?session=${encodeURIComponent(nextSessionId)}&mode=${encodeURIComponent(mode)}`;
-      window.location.assign(nextUrl);
+      window.location.assign(buildSessionUrl(nextSessionId, { mode }));
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);

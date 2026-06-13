@@ -3569,7 +3569,7 @@ function applyTextStyle(prop, value) {
   if (!selectedTextId) return;
   const obj = state.objects.find(o => o.id === selectedTextId);
   const el  = document.querySelector(`.canvas-text[data-obj-id="${selectedTextId}"]`);
-  if (!obj || !el) return;
+  if (!obj || !el || !guardEditObject(obj)) return;
   obj[prop] = value;
   // apply to wrapper (font props cascade to inner editable)
   if (prop === 'fontSize')   { el.style.fontSize   = value + 'px'; }
@@ -3624,6 +3624,8 @@ function setTextColor(color) {
 
 function deleteSelectedTextNode() {
   if (!selectedTextId) return;
+  const obj = state.objects.find(o => o.id === selectedTextId);
+  if (!guardEditObject(obj)) return;
   document.querySelector(`.canvas-text[data-obj-id="${selectedTextId}"]`)?.remove();
   state.objects = state.objects.filter(o => o.id !== selectedTextId);
   updateObjectCount();
@@ -3637,8 +3639,10 @@ const _origSelectObject = selectObject;
 selectObject = function(id, addToSelection) {
   _origSelectObject(id, addToSelection);
   const obj = state.objects.find(o => o.id === id);
-  if (obj && obj.type === 'text') {
+  if (obj && obj.type === 'text' && selectedIds.has(id)) {
     selectTextNode(id);
+  } else {
+    hideTextToolbar();
   }
 };
 
@@ -5900,6 +5904,7 @@ function renderStickyFromObj(obj) {
   menuBtn.addEventListener('click', ev => {
     ev.stopPropagation();
     ev.preventDefault();
+    if (!guardEditObject(obj)) return;
     selectSticky(obj.id);
     showStickyPicker(obj.id, ev.clientX, ev.clientY);
   });
@@ -6042,8 +6047,9 @@ function startStickyResize(e, el, obj) {
 
 // ── COLOR PICKER popup
 function showStickyPicker(id, cx, cy) {
-  stickyPickerTargetId = id;
   const obj = state.objects.find(o => o.id === id);
+  if (!guardEditObject(obj)) return;
+  stickyPickerTargetId = id;
   if (obj) updatePickerSwatchActive(normalizeStickyColorName(obj.color));
 
   const picker = document.getElementById('sticky-color-picker');
@@ -6078,7 +6084,7 @@ document.addEventListener('click', e => {
 function applyColorToSticky(id, colorName) {
   if (!id) return;
   const obj = state.objects.find(o => o.id === id);
-  if (!obj) return;
+  if (!guardEditObject(obj)) return;
   obj.color = colorName;
   const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
   if (!el) return;
@@ -6110,6 +6116,8 @@ function duplicateSelected() {
 function deleteSelectedSticky() {
   const id = stickyPickerTargetId || selectedStickyId;
   if (!id) return;
+  const obj = state.objects.find(o => o.id === id);
+  if (!guardEditObject(obj)) return;
   const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
   if (el) el.remove();
   state.objects = state.objects.filter(o => o.id !== id);

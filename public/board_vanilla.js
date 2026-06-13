@@ -1358,23 +1358,15 @@ function showToast(msg) {
 // ═══════════════════════════════════════════════════
 function saveToStorage() {
   localStorage.setItem('lpa-board-saved', new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }));
+  const boardState = getCurrentBoardState();
+  const prepared = prepareBoardStateForPersistence(boardState);
   try {
-    localStorage.setItem('lpa-mindspace-v1', JSON.stringify({
-      boardName: state.boardName,
-      objects: state.objects,
-      panX: state.panX, panY: state.panY, zoom: state.zoom,
-      sharing: state.sharing || null,
-    }));
-    if (window.supabaseStorageSave) window.supabaseStorageSave({
-      boardName: state.boardName,
-      objects: state.objects,
-      panX: state.panX, panY: state.panY, zoom: state.zoom,
-      sharing: state.sharing || null,
-    });
-    publishBoardDeltaUpdate();
+    localStorage.setItem('lpa-mindspace-v1', JSON.stringify(prepared));
   } catch (e) {
     console.warn('[board] local save failed (storage may be full)', e);
   }
+  queueSupabaseSave(boardState);
+  publishBoardDeltaUpdate();
 }
 
 function loadFromStorage() {
@@ -1389,7 +1381,7 @@ function loadFromStorage() {
     state.panX = data.panX || 0;
     state.panY = data.panY || 0;
     state.zoom = data.zoom || 1;
-    state.objects = data.objects || [];
+    state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
     document.getElementById('boardName').value = state.boardName;
     document.title = state.boardName + ' — LPA MindSpace';
@@ -1456,15 +1448,82 @@ function cloneBoardStateSnapshot(source) {
   return JSON.parse(JSON.stringify(source || getCurrentBoardState()));
 }
 
+const BOARD_IMAGES_BUCKET = 'board-images';
+
 function isInlineImageSrc(src) {
   return typeof src === 'string' && src.startsWith('data:');
+}
+
+function getBoardImagePublicUrl(objectId, ext = 'jpg') {
+  const client = window.supabaseClient;
+  const boardId = boardAccess.boardId;
+  if (!client || !boardId || !objectId) return '';
+  const path = `${boardId}/${objectId}.${ext}`;
+  const { data } = client.storage.from(BOARD_IMAGES_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || '';
+}
+
+function hydrateImageObject(obj) {
+  if (!obj || obj.type !== 'image') return obj;
+  if (obj.src && !isInlineImageSrc(obj.src)) return obj;
+  const pngUrl = getBoardImagePublicUrl(obj.id, 'png');
+  const jpgUrl = getBoardImagePublicUrl(obj.id, 'jpg');
+  if (isInlineImageSrc(obj.src)) return obj;
+  return { ...obj, src: obj.src || jpgUrl || pngUrl || '' };
+}
+
+function hydrateObjectsList(objects) {
+  return (objects || []).map(hydrateImageObject);
+}
+
+function prepareObjectForPersistence(obj) {
+  if (!obj || obj.type !== 'image') return obj;
+  if (!isInlineImageSrc(obj.src)) return obj;
+  const ext = obj.src.includes('image/png') ? 'png' : 'jpg';
+  const url = getBoardImagePublicUrl(obj.id, ext);
+  return { ...obj, src: url || '' };
+}
+
+function prepareBoardStateForPersistence(boardState) {
+  if (!boardState || typeof boardState !== 'object') return boardState;
+  return {
+    ...boardState,
+    objects: (boardState.objects || []).map(prepareObjectForPersistence),
+  };
+}
+
+let supabaseSaveInFlight = false;
+let supabaseSavePending = null;
+
+async function flushSupabaseSaveQueue() {
+  if (supabaseSaveInFlight || !window.supabaseStorageSave) return;
+  supabaseSaveInFlight = true;
+  while (supabaseSavePending) {
+    const toSave = supabaseSavePending;
+    supabaseSavePending = null;
+    try {
+      await window.supabaseStorageSave(toSave);
+    } catch (e) {
+      console.error('[board] Supabase state save failed', e);
+    }
+  }
+  supabaseSaveInFlight = false;
+}
+
+function queueSupabaseSave(boardState) {
+  supabaseSavePending = prepareBoardStateForPersistence(boardState);
+  flushSupabaseSaveQueue();
 }
 
 function sanitizeObjForSync(obj) {
   if (!obj || obj.type !== 'image') return obj;
   if (isInlineImageSrc(obj.src)) {
-    // Realtime payloads cannot carry multi-MB base64 blobs; peers load via DB resync.
-    return { ...obj, src: '' };
+    const ext = obj.src.includes('image/png') ? 'png' : 'jpg';
+    return { ...obj, src: getBoardImagePublicUrl(obj.id, ext) || '' };
+  }
+  if (!obj.src) {
+    const hydrated = hydrateImageObject(obj);
+    return hydrated.src ? hydrated : obj;
   }
   return obj;
 }
@@ -1508,7 +1567,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   state.panX = Number.isFinite(remoteState.panX) ? remoteState.panX : 0;
   state.panY = Number.isFinite(remoteState.panY) ? remoteState.panY : 0;
   state.zoom = Number.isFinite(remoteState.zoom) ? remoteState.zoom : 1;
-  state.objects = [...mergedRemoteList, ...localImagesMissingFromRemote];
+  state.objects = hydrateObjectsList([...mergedRemoteList, ...localImagesMissingFromRemote]);
   state.sharing = remoteState.sharing || null;
 
   const boardNameInput = document.getElementById('boardName');
@@ -1729,7 +1788,7 @@ function applyRemoteBoardOps(ops, meta = {}) {
       ) {
         objectMap.set(id, { ...op.obj, src: existing.src });
       } else {
-        objectMap.set(id, op.obj);
+        objectMap.set(id, op.obj.type === 'image' ? hydrateImageObject(op.obj) : op.obj);
       }
       changed = true;
       return;
@@ -1756,7 +1815,7 @@ function applyRemoteBoardOps(ops, meta = {}) {
   });
 
   if (!changed) return;
-  state.objects = Array.from(objectMap.values());
+  state.objects = hydrateObjectsList(Array.from(objectMap.values()));
   applyTransform();
   redrawAll();
   updateObjectCount();
@@ -3157,7 +3216,6 @@ whenDomReady(() => {
 // ═══════════════════════════════════════════════════
 
 let selectedImageId = null;
-const BOARD_IMAGES_BUCKET = 'board-images';
 
 function dataUrlToBlob(dataUrl) {
   const [header, b64] = dataUrl.split(',');
@@ -3198,25 +3256,23 @@ function compressImageDataUrl(dataUrl, maxDim = 1200, quality = 0.82) {
   });
 }
 
-async function uploadBoardImageDataUrl(dataUrl, objectId) {
+async function uploadBoardImageDataUrl(dataUrl, objectId, ext = 'jpg') {
   const client = window.supabaseClient;
   const boardId = boardAccess.boardId;
   if (!client || !boardId) return null;
   try {
     const blob = dataUrlToBlob(dataUrl);
-    const ext = blob.type === 'image/png' ? 'png' : 'jpg';
     const path = `${boardId}/${objectId}.${ext}`;
     const { error } = await client.storage.from(BOARD_IMAGES_BUCKET).upload(path, blob, {
       upsert: true,
       cacheControl: '3600',
-      contentType: blob.type || 'image/jpeg',
+      contentType: blob.type || (ext === 'png' ? 'image/png' : 'image/jpeg'),
     });
     if (error) {
       console.error('[board] image upload failed', error.message);
       return null;
     }
-    const { data } = client.storage.from(BOARD_IMAGES_BUCKET).getPublicUrl(path);
-    return data?.publicUrl || null;
+    return getBoardImagePublicUrl(objectId, ext);
   } catch (e) {
     console.error('[board] image upload failed', e);
     return null;
@@ -3224,26 +3280,31 @@ async function uploadBoardImageDataUrl(dataUrl, objectId) {
 }
 
 async function resolveImageSrcForBoard(dataUrl, objectId) {
-  try {
-    const compressed = await compressImageDataUrl(dataUrl);
-    const uploaded = await uploadBoardImageDataUrl(compressed.dataUrl, objectId);
-    return {
-      src: uploaded || compressed.dataUrl,
-      naturalW: compressed.naturalW,
-      naturalH: compressed.naturalH,
-      uploaded: !!uploaded,
-    };
-  } catch (e) {
-    console.warn('[board] image compress failed, using original', e);
-    const uploaded = await uploadBoardImageDataUrl(dataUrl, objectId);
-    return { src: uploaded || dataUrl, naturalW: null, naturalH: null, uploaded: !!uploaded };
+  const compressed = await compressImageDataUrl(dataUrl);
+  const ext = compressed.dataUrl.includes('image/png') ? 'png' : 'jpg';
+  const uploaded = await uploadBoardImageDataUrl(compressed.dataUrl, objectId, ext);
+  if (!uploaded) {
+    throw new Error('Image upload failed — create the board-images bucket in Supabase (run supabase_board_images_storage.sql)');
   }
+  return {
+    src: uploaded,
+    naturalW: compressed.naturalW,
+    naturalH: compressed.naturalH,
+    uploaded: true,
+  };
 }
 
 async function createImageObjectAtWorldPoint(dataUrl, naturalW, naturalH, worldX, worldY) {
   showToast('Uploading image…');
   const objectId = uid();
-  const resolved = await resolveImageSrcForBoard(dataUrl, objectId);
+  let resolved;
+  try {
+    resolved = await resolveImageSrcForBoard(dataUrl, objectId);
+  } catch (e) {
+    console.error('[board] image upload failed', e);
+    showToast('Image upload failed — check Supabase Storage (board-images bucket)');
+    return null;
+  }
   const srcNaturalW = resolved.naturalW || naturalW;
   const srcNaturalH = resolved.naturalH || naturalH;
 
@@ -3269,9 +3330,10 @@ async function createImageObjectAtWorldPoint(dataUrl, naturalW, naturalH, worldX
   renderImageObj(obj);
   History.push();
   saveToStorage();
+  publishBoardStateUpdate({ reason: 'state' });
   setTool('select');
   selectImageObj(obj.id);
-  showToast(resolved.uploaded ? 'Image placed' : 'Image placed (saved locally — run storage SQL if sync fails)');
+  showToast('Image placed');
   return obj;
 }
 
@@ -3284,14 +3346,22 @@ async function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
 
 // ── Render image object to DOM
 function renderImageObj(obj) {
+  const hydrated = hydrateImageObject(obj);
   const el = document.createElement('div');
   el.className = 'image-obj';
   el.dataset.objId = obj.id;
   el.style.cssText = `left:${obj.x}px;top:${obj.y}px;width:${obj.w}px;height:${obj.h}px;`;
 
   const img = document.createElement('img');
-  img.src = obj.src;
   img.draggable = false;
+  const displaySrc = hydrated.src || '';
+  if (displaySrc) img.src = displaySrc;
+  img.onerror = () => {
+    if (!obj.src && displaySrc.endsWith('.jpg')) {
+      const pngUrl = getBoardImagePublicUrl(obj.id, 'png');
+      if (pngUrl && img.src !== pngUrl) img.src = pngUrl;
+    }
+  };
   el.appendChild(img);
 
   // ── 8 resize handles

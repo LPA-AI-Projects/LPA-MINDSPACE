@@ -38,7 +38,8 @@
   <div style="font-size:11px;color:rgba(251,251,251,0.4);font-family:'JetBrains Mono',monospace;
     margin-bottom:8px;letter-spacing:0.5px;">✦ MODIFY SELECTION WITH AI</div>
   <div style="display:flex;gap:6px;">
-    <input id="sel-ai-input" placeholder="e.g. change to blue sticky notes, add arrows…"
+    <input id="sel-ai-input" placeholder="e.g. change to blue stickies, add arrows between steps…"
+      maxlength="500"
       style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);
       border-radius:7px;color:#fbfbfb;font-family:'Bricolage Grotesque',sans-serif;
       font-size:12px;padding:7px 10px;outline:none;"
@@ -232,7 +233,8 @@
 <!-- AI PROMPT BAR -->
 <div id="ai-bar">
   <span class="ai-bar-icon">✦</span>
-  <input id="ai-input" placeholder="Ask AI to generate something… e.g. 'create an onboarding flowchart'"
+  <input id="ai-input" placeholder="Flowcharts, diagrams, brainstorms… e.g. 'create a 5-step onboarding flowchart'"
+    maxlength="500"
     autocomplete="off" spellcheck="false"
     onkeydown="handleAiKey(event)"/>
   <button class="ai-bar-send" id="ai-send-btn" onclick="submitAiPrompt()" title="Generate (Enter)">

@@ -5332,6 +5332,106 @@ function ctxAction(action) {
 // AI GENERATION — STEP 9
 // ═══════════════════════════════════════════════════
 
+const AI_PROMPT_MAX_CHARS = 500;
+const AI_MAX_OBJECTS = 25;
+const AI_MAX_STICKY_CHARS = 280;
+const AI_MAX_TEXT_CHARS = 120;
+const AI_MAX_LABEL_CHARS = 60;
+
+const AI_BLOCKED_PROMPT_PATTERNS = [
+  /\b(html|css|javascript|typescript|python|java|c\+\+|react|vue|angular|node\.?js)\b/i,
+  /\b(chat\s*bot|chatbot|web\s*app|website|landing\s*page)\b/i,
+  /\b(full\s+(app|application|code|program|software)|complete\s+(app|application|html|code))\b/i,
+  /\b(runnable|executable|deployable)\b/i,
+  /\b(mobile\s*app|android\s*app|ios\s*app)\b/i,
+  /<!DOCTYPE|<html[\s>]|<script[\s>]/i,
+  /\b(write|generate|create|build)\s+(me\s+)?(a\s+)?(code|coding|program|script)\b/i,
+  /\b(api\s+endpoint|rest\s+api|database\s+schema|sql\s+query)\b/i,
+  /\b(spring\s*boot|django|flask|express\.js|next\.js|laravel)\b/i,
+];
+
+const AI_CODE_LIKE_OUTPUT = [
+  /<!DOCTYPE/i,
+  /<html[\s>]/i,
+  /<script[\s>]/i,
+  /<\/script>/i,
+  /function\s+\w+\s*\(/,
+  /import\s+.+from\s+['"]/,
+  /export\s+default/,
+];
+
+function getAiBlockedPromptReason(text) {
+  if (!text || typeof text !== 'string') return 'Prompt is required';
+  const trimmed = text.trim();
+  if (!trimmed) return 'Prompt is required';
+  if (trimmed.length > AI_PROMPT_MAX_CHARS) {
+    return `Prompt too long (max ${AI_PROMPT_MAX_CHARS} characters)`;
+  }
+  for (const pattern of AI_BLOCKED_PROMPT_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return 'Board AI is for flowcharts, diagrams, and brainstorming — not code or full applications.';
+    }
+  }
+  return null;
+}
+
+function truncateAiText(text, maxLen) {
+  if (!text || typeof text !== 'string') return '';
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLen) return trimmed;
+  return `${trimmed.slice(0, maxLen - 1)}…`;
+}
+
+function aiOutputLooksLikeCode(text) {
+  if (!text || typeof text !== 'string') return false;
+  return AI_CODE_LIKE_OUTPUT.some((pattern) => pattern.test(text));
+}
+
+function sanitizeAiBoardResponse(parsed) {
+  if (!parsed || typeof parsed !== 'object') return { title: '', objects: [] };
+  const allowedTypes = new Set(['sticky', 'text', 'shape']);
+  const objects = Array.isArray(parsed.objects) ? parsed.objects.slice(0, AI_MAX_OBJECTS) : [];
+  const sanitized = [];
+
+  objects.forEach((obj) => {
+    if (!obj || !allowedTypes.has(obj.type)) return;
+
+    if (obj.type === 'sticky') {
+      let text = truncateAiText(obj.text || '', AI_MAX_STICKY_CHARS);
+      if (aiOutputLooksLikeCode(text)) {
+        text = 'Content trimmed — board AI creates diagrams and stickies, not code. Try a flowchart prompt.';
+      }
+      sanitized.push({ ...obj, text });
+      return;
+    }
+
+    if (obj.type === 'text') {
+      let content = truncateAiText(obj.content || '', AI_MAX_TEXT_CHARS);
+      if (aiOutputLooksLikeCode(content)) {
+        content = 'Use board AI for short labels, not code.';
+      }
+      sanitized.push({ ...obj, content });
+      return;
+    }
+
+    if (obj.type === 'shape') {
+      sanitized.push({ ...obj, label: truncateAiText(obj.label || '', AI_MAX_LABEL_CHARS) });
+    }
+  });
+
+  return {
+    title: truncateAiText(parsed.title || '', 80),
+    objects: sanitized,
+  };
+}
+
+const AI_SCOPE_RULES = `SCOPE (strict):
+- ONLY whiteboard objects: stickies, short text labels, shapes, arrows, lines.
+- NEVER output HTML, CSS, JavaScript, or any executable code.
+- NEVER build websites, apps, chatbots, or software — redirect the user to diagram/brainstorm use cases.
+- Maximum ${AI_MAX_OBJECTS} objects. Sticky text max ${AI_MAX_STICKY_CHARS} chars. Shape labels max 8 words.
+- Good requests: flowcharts, process diagrams, mind maps, matrices, journey maps, brainstorm stickies, checklists, templates.`;
+
 /** Same-origin API in production; never use localhost on a public HTTPS site. */
 function getApiBase() {
   if (typeof window !== 'undefined' && window.__LPA_API_BASE__ != null) {
@@ -5451,12 +5551,19 @@ async function submitAiPrompt() {
   const prompt = document.getElementById('ai-input').value.trim();
   if (!prompt) { document.getElementById('ai-input').focus(); return; }
 
+  const blockReason = getAiBlockedPromptReason(prompt);
+  if (blockReason) {
+    showToast(blockReason);
+    return;
+  }
+
   /* API key check removed for backend proxy */
 
   showAiLoading('Thinking…');
 
   try {
     const systemPrompt = `You are a whiteboard layout assistant for LPA MindSpace, a corporate training tool.
+${AI_SCOPE_RULES}
 The user will ask you to generate content for a whiteboard board.
 You must respond with ONLY a valid JSON object — no explanation, no markdown, no backticks.
 
@@ -5522,6 +5629,7 @@ Current board has ${state.objects.length} existing objects — new content must 
     const response = await postGenerateBoard({
       systemPrompt: systemPrompt,
       userMsg: userMsg,
+      mode: 'generate',
     });
 
     if (!response.ok) {
@@ -5537,10 +5645,10 @@ Current board has ${state.objects.length} existing objects — new content must 
     const data = await response.json();
     const rawText = data.content[0]?.text || '';
 
-    const parsed = parseAiJsonResponse(rawText);
+    const parsed = sanitizeAiBoardResponse(parseAiJsonResponse(rawText));
 
-    if (!parsed.objects || !Array.isArray(parsed.objects)) {
-      throw new Error('Invalid response format');
+    if (!parsed.objects || !Array.isArray(parsed.objects) || !parsed.objects.length) {
+      throw new Error('No board objects returned — try a flowchart or brainstorm prompt');
     }
 
     // ── Render all objects onto the board
@@ -5671,6 +5779,13 @@ async function submitSelectionAi() {
   }
   const prompt = document.getElementById('sel-ai-input').value.trim();
   if (!prompt) return;
+
+  const blockReason = getAiBlockedPromptReason(prompt);
+  if (blockReason) {
+    showToast(blockReason);
+    return;
+  }
+
   /* API key check removed for backend proxy */
   if (selectedIds.size === 0) { showToast('Select some objects first'); return; }
 
@@ -5692,6 +5807,7 @@ async function submitSelectionAi() {
 
   try {
     const sysPrompt = `You are a whiteboard assistant. The user has selected some objects on their whiteboard and wants to modify them.
+${AI_SCOPE_RULES}
 You will receive the current selected objects as JSON and a modification request.
 Return ONLY a JSON object with this structure (no markdown, no explanation):
 {
@@ -5713,6 +5829,7 @@ Replace or modify the selected objects according to the request. Keep them in ro
     const resp = await postGenerateBoard({
       systemPrompt: sysPrompt,
       userMsg: userMsg,
+      mode: 'selection',
     });
 
     if (!resp.ok) {
@@ -5721,9 +5838,9 @@ Replace or modify the selected objects according to the request. Keep them in ro
     }
     const data = await resp.json();
     const raw  = data.content[0]?.text || '';
-    const parsed = parseAiJsonResponse(raw);
+    const parsed = sanitizeAiBoardResponse(parseAiJsonResponse(raw));
 
-    if (!parsed.objects) throw new Error('Invalid response');
+    if (!parsed.objects || !parsed.objects.length) throw new Error('No objects returned');
 
     // delete selected objects
     selectedIds.forEach(id => {

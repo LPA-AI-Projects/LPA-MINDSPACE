@@ -4,6 +4,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import {
+  AI_LIMITS,
+  SERVER_AI_POLICY,
+  getBlockedPromptReason,
+} from './aiGuardrails.js';
 
 dotenv.config();
 
@@ -14,7 +19,7 @@ const distPath = path.join(__dirname, 'dist');
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS) || 8000;
+const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS) || AI_LIMITS.maxOutputTokens;
 
 const app = express();
 app.use(cors());
@@ -32,13 +37,24 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/generate-board', async (req, res) => {
   try {
-    const { systemPrompt, userMsg } = req.body;
-    
+    const { systemPrompt, userMsg, mode = 'generate' } = req.body;
+
+    const blockReason = getBlockedPromptReason(userMsg);
+    if (blockReason) {
+      return res.status(400).json({ error: blockReason, source: 'guardrail' });
+    }
+
     // In production, fetch this securely from dotenv or secret manager
     const aiApiKey = process.env.ANTHROPIC_API_KEY;
     if (!aiApiKey) {
        return res.status(500).json({ error: 'API key is missing in backend secrets' });
     }
+
+    const maxTokens = mode === 'selection'
+      ? Math.min(ANTHROPIC_MAX_TOKENS, AI_LIMITS.maxSelectionTokens)
+      : Math.min(ANTHROPIC_MAX_TOKENS, AI_LIMITS.maxOutputTokens);
+
+    const fullSystemPrompt = `${SERVER_AI_POLICY}\n\n${systemPrompt || ''}`;
 
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
@@ -49,8 +65,8 @@ app.post('/api/generate-board', async (req, res) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: ANTHROPIC_MAX_TOKENS,
-        system: systemPrompt,
+        max_tokens: maxTokens,
+        system: fullSystemPrompt,
         messages: [{ role: 'user', content: userMsg }],
       }),
     });

@@ -265,8 +265,8 @@
   <div class="mm-section-title">Background</div>
   <div class="mm-bg-swatches">
     <div class="mm-bg-swatch active" id="bg-white"  style="background:#fbfbfb;" title="White"      onclick="setBoardBg('white')"></div>
-    <div class="mm-bg-swatch"        id="bg-gray"   style="background:#f0f0ed;" title="Light gray" onclick="setBoardBg('gray')"></div>
-    <div class="mm-bg-swatch"        id="bg-dark"   style="background:#1e1e2e;" title="Dark"       onclick="setBoardBg('dark')"></div>
+    <div class="mm-bg-swatch"        id="bg-gray"   style="background:color-mix(in srgb, #141414 6%, #fbfbfb);" title="Soft" onclick="setBoardBg('gray')"></div>
+    <div class="mm-bg-swatch"        id="bg-dark"   style="background:#141414;" title="Dark"       onclick="setBoardBg('dark')"></div>
   </div>
   <div class="mm-sep"></div>
   <button class="mm-item" onclick="toggleFullscreen(); hideMoreMenu()">
@@ -321,9 +321,7 @@
 </div>
 
 <!-- OVERLAY backdrop for panels -->
-<div id="panel-backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);
-  backdrop-filter:blur(2px);z-index:590;display:none;"
-  onclick="closeAllPanels()"></div>
+<div id="panel-backdrop" onclick="closeAllPanels()"></div>
 
 <!-- ERASER CURSOR -->
 <div id="eraser-cursor"></div>

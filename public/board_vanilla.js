@@ -2331,7 +2331,7 @@ function applyAccessModeUi() {
 }
 
 function userColorFromId(id) {
-  const palette = ['#2e9d91', '#4f71f2', '#f2541d', '#8b5cf6', '#0ea5e9', '#eab308', '#22c55e'];
+  const palette = ['#2e9d91', '#4f71f2', '#f2541d', '#141414', '#fbfbfb'];
   let hash = 0;
   const str = id || 'user';
   for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
@@ -2896,9 +2896,8 @@ document.addEventListener('wheel', () => positionSelToolbar(), { passive: true }
 // ═══════════════════════════════════════════════════
 
 const SHAPE_FILLS = [
-  { name:'none',    color:'transparent', border:'1px solid rgba(0,0,0,0.15)' },
-  { name:'white',   color:'#ffffff' },
-  { name:'yellow',  color:'#FFF176' },
+  { name:'none',    color:'transparent', border:'1px solid rgba(20,20,20,0.15)' },
+  { name:'white',   color:'#fbfbfb' },
   { name:'teal',    color:'#2e9d91' },
   { name:'blue',    color:'#4f71f2' },
   { name:'orange',  color:'#f2541d' },
@@ -2910,7 +2909,7 @@ const SHAPE_STROKES = [
   { name:'teal',    color:'#2e9d91' },
   { name:'blue',    color:'#4f71f2' },
   { name:'orange',  color:'#f2541d' },
-  { name:'gray',    color:'#888888' },
+  { name:'white',   color:'#fbfbfb' },
   { name:'none',    color:'transparent' },
 ];
 
@@ -2987,7 +2986,7 @@ function startShapeDraw(e) {
   shapePreviewEl = document.createElement('div');
   shapePreviewEl.className = 'shape-preview';
   shapePreviewEl.style.cssText = `left:${shapeDrawStart.x}px;top:${shapeDrawStart.y}px;width:0;height:0;`;
-  shapePreviewEl.innerHTML = buildShapeSVG(currentShapeType, 0, 0, '#ffffff', '#141414', 1.5);
+  shapePreviewEl.innerHTML = buildShapeSVG(currentShapeType, 0, 0, '#fbfbfb', '#141414', 1.5);
   canvasWorld.appendChild(shapePreviewEl);
 }
 
@@ -3054,7 +3053,7 @@ function endShapeDraw(e) {
       id: uid(), type: 'shape',
       shapeType: currentShapeType,
       x, y, w, h,
-      fill: '#ffffff', stroke: '#141414', strokeWidth: 1.5,
+      fill: '#fbfbfb', stroke: '#141414', strokeWidth: 1.5,
       label: '',
     };
   }
@@ -3170,7 +3169,7 @@ const SHAPE_REGISTRY = [
 
 // ── Build SVG for any registered shape
 function buildShapeSVG(type, w, h, fill, stroke, sw) {
-  const f  = fill   || '#ffffff';
+  const f  = fill   || '#fbfbfb';
   const s  = stroke || '#141414';
   const sw2 = sw    || 1.5;
   const def = SHAPE_REGISTRY.find(r => r.id === type);
@@ -3395,7 +3394,7 @@ function renderShapeObj(obj) {
     label.className = 'shape-label';
     label.contentEditable = 'false';
     label.textContent = obj.label || '';
-    label.style.color = (obj.fill === '#141414') ? '#ffffff' : '#141414';
+    label.style.color = (obj.fill === '#141414') ? '#fbfbfb' : '#141414';
     el.appendChild(label);
 
     // double-click to edit label
@@ -3579,7 +3578,7 @@ function applyShapeFill(id, color) {
   if (!obj || !el || !guardEditObject(obj)) return;
   obj.fill = color;
   if (el._updateShapeSvg) el._updateShapeSvg();
-  if (el._label) el._label.style.color = color === '#141414' ? '#ffffff' : '#141414';
+  if (el._label) el._label.style.color = color === '#141414' ? '#fbfbfb' : '#141414';
   History.push(); saveToStorage();
 }
 
@@ -3688,7 +3687,7 @@ function compressImageDataUrl(dataUrl, maxDim = 1200, quality = 0.82) {
       const ctx = cv.getContext('2d');
       const isPng = dataUrl.includes('image/png');
       if (!isPng) {
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#fbfbfb';
         ctx.fillRect(0, 0, cw, ch);
       }
       ctx.drawImage(img, 0, 0, cw, ch);
@@ -4130,7 +4129,7 @@ handleSelectMousedown = function(e) {
 // ═══════════════════════════════════════════════════
 
 const TEXT_COLORS = [
-  '#141414', '#ffffff', '#2e9d91', '#4f71f2', '#f2541d', '#f59e0b', '#22c55e', '#ef4444'
+  '#141414', '#fbfbfb', '#2e9d91', '#4f71f2', '#f2541d',
 ];
 
 // current style applied to new text nodes
@@ -4152,7 +4151,7 @@ function initTextToolbar() {
     const s = document.createElement('div');
     s.className = 'ttb-color-swatch';
     s.style.background = c;
-    if (c === '#ffffff') s.style.border = '2px solid rgba(255,255,255,0.3)';
+    if (c === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
     s.title = c;
     s.addEventListener('mousedown', ev => {
       ev.preventDefault(); ev.stopPropagation();
@@ -4448,11 +4447,11 @@ async function drawBoardToCanvas(bounds, pad, scale) {
     } else if (obj.type === 'sticky') {
       const x=tx(obj.x), y=ty(obj.y), w=ts(obj.w||220), h=ts(obj.h||180);
       const bgMap = {
-        yellow:'#FFF176',orange:'#FFCC80',pink:'#F48FB1',red:'#EF9A9A',
-        teal:'#80DEEA',blue:'#90CAF9',purple:'#CE93D8',green:'#A5D6A7',
-        white:'#FAFAFA',charcoal:'#424242'
+        teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
+        white:'#fbfbfb', charcoal:'#141414',
+        yellow:'#2e9d91', pink:'#f2541d', red:'#f2541d', purple:'#4f71f2', green:'#2e9d91',
       };
-      ctx.fillStyle = bgMap[obj.color] || '#FFF176';
+      ctx.fillStyle = bgMap[obj.color] || '#2e9d91';
       roundRectPath(ctx, x, y, w, h, ts(12));
       ctx.fill();
       // handle bar
@@ -4495,7 +4494,7 @@ async function drawBoardToCanvas(bounds, pad, scale) {
         }
       } else {
         const x=tx(obj.x), y=ty(obj.y), w=ts(obj.w||100), h=ts(obj.h||80);
-        const f = obj.fill || '#ffffff';
+        const f = obj.fill || '#fbfbfb';
         const s = obj.stroke || '#141414';
         const sw = ts(obj.strokeWidth || 1.5);
         ctx.fillStyle   = f === 'transparent' ? 'rgba(0,0,0,0)' : f;
@@ -4506,7 +4505,7 @@ async function drawBoardToCanvas(bounds, pad, scale) {
         ctx.stroke();
         // label
         if (obj.label) {
-          ctx.fillStyle   = f === '#141414' ? '#ffffff' : '#141414';
+          ctx.fillStyle   = f === '#141414' ? '#fbfbfb' : '#141414';
           ctx.font        = `600 ${ts(13)}px 'Bricolage Grotesque', sans-serif`;
           ctx.textAlign   = 'center';
           ctx.textBaseline = 'middle';
@@ -4932,14 +4931,14 @@ function drawMinimap() {
 
     } else if (obj.type === 'sticky') {
       const bgMap = {
-        yellow:'#FFF176', orange:'#FFCC80', pink:'#F48FB1', red:'#EF9A9A',
-        teal:'#80DEEA', blue:'#90CAF9', purple:'#CE93D8', green:'#A5D6A7',
-        white:'#FAFAFA', charcoal:'#424242'
+        teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
+        white:'#fbfbfb', charcoal:'#141414',
+        yellow:'#2e9d91', pink:'#f2541d', red:'#f2541d', purple:'#4f71f2', green:'#2e9d91',
       };
       const domEl = document.querySelector(`.sticky-note[data-obj-id="${obj.id}"]`);
       const w = domEl ? domEl.offsetWidth  : (obj.w||220);
       const h = domEl ? domEl.offsetHeight : (obj.h||180);
-      mmCtx.fillStyle = bgMap[obj.color] || '#FFF176';
+      mmCtx.fillStyle = bgMap[obj.color] || '#2e9d91';
       mmRoundRect(mmCtx, wx(obj.x), wy(obj.y), ws(w), ws(h), 2);
       mmCtx.fill();
 
@@ -5511,7 +5510,7 @@ function convertStrokeToShape(strokeId, recognized) {
       id: uid(), type: 'shape',
       shapeType,
       x: b.x, y: b.y, w: b.w, h: b.h,
-      fill: '#ffffff', stroke: '#141414', strokeWidth: 1.5,
+      fill: '#fbfbfb', stroke: '#141414', strokeWidth: 1.5,
       label: '',
     };
     stampOwner(obj);
@@ -5539,15 +5538,10 @@ startStroke = function(e) {
 
 const PEN_COLORS = [
   { name:'black',   hex:'#141414' },
-  { name:'white',   hex:'#FAFAFA' },
-  { name:'red',     hex:'#ef4444' },
-  { name:'orange',  hex:'#f2541d' },
-  { name:'amber',   hex:'#f59e0b' },
-  { name:'green',   hex:'#22c55e' },
+  { name:'white',   hex:'#fbfbfb' },
   { name:'teal',    hex:'#2e9d91' },
+  { name:'orange',  hex:'#f2541d' },
   { name:'blue',    hex:'#4f71f2' },
-  { name:'purple',  hex:'#a855f7' },
-  { name:'pink',    hex:'#ec4899' },
 ];
 
 const penState = {
@@ -5565,7 +5559,7 @@ function initPenToolbar() {
     const s = document.createElement('div');
     s.className = 'pt-color' + (c.hex === penState.color ? ' active' : '');
     s.style.background = c.hex;
-    if (c.hex === '#FAFAFA') s.style.border = '2px solid rgba(255,255,255,0.3)';
+    if (c.hex === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
     s.title = c.name;
     s.addEventListener('click', () => {
       setPenColor(c.hex);
@@ -6141,7 +6135,7 @@ async function renderAiObjects(objects) {
         id, type: 'sticky',
         x: obj.x || 100, y: obj.y || 100,
         w: obj.w || 220, h: obj.h || 180,
-        color: normalizeStickyColorName(obj.color || 'yellow'),
+        color: normalizeStickyColorName(obj.color || 'teal'),
         text: obj.text || '',
         zIndex: nextZIndex(),
       };
@@ -6177,7 +6171,7 @@ async function renderAiObjects(objects) {
         shapeType: obj.shapeType || 'rect',
         x: obj.x || 100, y: obj.y || 100,
         w: obj.w || 160, h: obj.h || 80,
-        fill: obj.fill || '#ffffff',
+        fill: obj.fill || '#fbfbfb',
         stroke: obj.stroke || '#141414',
         strokeWidth: obj.strokeWidth || 1.5,
         label: obj.label || '',
@@ -6338,8 +6332,8 @@ document.addEventListener('mousedown', e => {
 // ── Background color
 const BG_CONFIGS = {
   white: { bg: '#fbfbfb', dot: 'rgba(20,20,20,0.13)', uiBg: '#141414', name: 'white' },
-  gray:  { bg: '#f0f0ed', dot: 'rgba(20,20,20,0.10)', uiBg: '#141414', name: 'gray'  },
-  dark:  { bg: '#1e1e2e', dot: 'rgba(255,255,255,0.08)', uiBg: '#0f0f1a', name: 'dark' },
+  gray:  { bg: '#fbfbfb', dot: 'rgba(20,20,20,0.22)', uiBg: '#141414', name: 'gray'  },
+  dark:  { bg: '#141414', dot: 'rgba(251,251,251,0.10)', uiBg: '#141414', name: 'dark' },
 };
 let currentBg = localStorage.getItem('lpa-canvas-bg') || 'white';
 
@@ -6454,38 +6448,35 @@ init();
 // ═══════════════════════════════════════════════════
 
 const STICKY_COLORS = [
-  { name:'yellow',  cls:'sn-yellow'  },
-  { name:'orange',  cls:'sn-orange'  },
-  { name:'pink',    cls:'sn-pink'    },
-  { name:'red',     cls:'sn-red'     },
   { name:'teal',    cls:'sn-teal'    },
+  { name:'orange',  cls:'sn-orange'  },
   { name:'blue',    cls:'sn-blue'    },
-  { name:'purple',  cls:'sn-purple'  },
-  { name:'green',   cls:'sn-green'   },
   { name:'white',   cls:'sn-white'   },
   { name:'charcoal',cls:'sn-charcoal'},
 ];
 
-// CSS background colors for the picker swatches
 const STICKY_BG = {
-  yellow:'#FFF176', orange:'#FFCC80', pink:'#F48FB1', red:'#EF9A9A',
-  teal:'#80DEEA', blue:'#90CAF9', purple:'#CE93D8', green:'#A5D6A7',
-  white:'#FAFAFA', charcoal:'#424242'
+  teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
+  white:'#fbfbfb', charcoal:'#141414'
 };
 
 /** Map AI / saved values to a palette name so CSS classes (.sn-*) match. */
 function normalizeStickyColorName(raw) {
-  if (raw == null || raw === '') return 'yellow';
+  if (raw == null || raw === '') return 'teal';
   const s = String(raw).trim();
   const lower = s.toLowerCase();
+  const legacyMap = {
+    yellow: 'teal', pink: 'orange', red: 'orange', purple: 'blue', green: 'teal',
+  };
+  if (legacyMap[lower]) return legacyMap[lower];
   if (STICKY_COLORS.some((c) => c.name === lower)) return lower;
   const hex = lower.startsWith('#') ? lower : `#${lower}`;
   const found = STICKY_COLORS.find((c) => (STICKY_BG[c.name] || '').toLowerCase() === hex);
   if (found) return found.name;
-  return 'yellow';
+  return 'teal';
 }
 
-let stickyLastColor = 'yellow'; // remember last used color
+let stickyLastColor = 'teal';
 let selectedStickyId = null;
 let stickyPickerTargetId = null;
 
@@ -6499,7 +6490,7 @@ function initStickyColorPicker() {
     const s = document.createElement('div');
     s.className = 'scp-swatch';
     s.style.background = STICKY_BG[c.name];
-    if (c.name === 'white') s.style.border = '1px solid rgba(0,0,0,0.15)';
+    if (c.name === 'white') s.style.border = '1px solid rgba(20,20,20,0.18)';
     s.title = c.name;
     s.dataset.color = c.name;
     s.addEventListener('click', ev => {
@@ -6556,7 +6547,7 @@ function renderStickyFromObj(obj) {
   const colorName = normalizeStickyColorName(obj.color);
   if (obj.color !== colorName) obj.color = colorName;
   const el = document.createElement('div');
-  el.className = `sticky-note ${STICKY_COLORS.find((c) => c.name === colorName)?.cls || 'sn-yellow'}`;
+  el.className = `sticky-note ${STICKY_COLORS.find((c) => c.name === colorName)?.cls || 'sn-teal'}`;
   el.dataset.objId = obj.id;
   el.style.cssText = `
     left:${obj.x}px; top:${obj.y}px;

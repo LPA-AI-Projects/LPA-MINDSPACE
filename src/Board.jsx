@@ -362,14 +362,12 @@ export default function Board({ session }) {
 
   if (loadError) {
     return (
-      <div style={{ background: '#141414', height: '100vh', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24, textAlign: 'center' }}>
-        <div>
-          <p style={{ marginBottom: 16 }}>{loadError}</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            style={{ padding: '10px 16px', borderRadius: 6, background: '#2e9d91', color: '#fff', border: 'none', cursor: 'pointer' }}
-          >
+      <div className="app-shell app-shell--center">
+        <div className="app-state-card">
+          <div className="app-state-icon app-state-icon--orange" aria-hidden="true">!</div>
+          <h2 className="app-state-title">Could not join session</h2>
+          <p className="app-state-message">{loadError}</p>
+          <button type="button" className="auth-submit" onClick={() => window.location.reload()}>
             Refresh page
           </button>
         </div>
@@ -379,8 +377,16 @@ export default function Board({ session }) {
 
   if (!boardLoaded) {
     return (
-      <div style={{ background: '#141414', height: '100vh', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-        Loading Workspace...
+      <div className="app-shell">
+        <div className="app-loader" role="status" aria-live="polite">
+          <div className="app-loader-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 16 16" fill="none">
+              <path d="M3 13L8 3L13 13" stroke="#fbfbfb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M5 9.5h6" stroke="#fbfbfb" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
+          <p className="app-loader-text">Loading workspace…</p>
+        </div>
       </div>
     );
   }

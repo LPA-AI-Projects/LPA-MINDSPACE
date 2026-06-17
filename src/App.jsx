@@ -22,16 +22,15 @@ function App() {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      // Token refresh on tab focus must not re-render Board (that wiped the canvas).
-      if (event === 'TOKEN_REFRESHED') return;
+      if (event === 'TOKEN_REFRESHED') return
       setSession((prev) => {
-        if (!nextSession) return null;
-        if (prev?.user?.id === nextSession.user?.id) return prev;
-        return nextSession;
-      });
-    });
+        if (!nextSession) return null
+        if (prev?.user?.id === nextSession.user?.id) return prev
+        return nextSession
+      })
+    })
 
-    return () => subscription.unsubscribe();
+    return () => subscription.unsubscribe()
   }, [])
 
   const handleLogin = async (e) => {
@@ -61,7 +60,6 @@ function App() {
       return
     }
 
-    // Full page load so Supabase auth + session board load in the correct order.
     if (sessionSlug) {
       window.location.replace(buildSessionUrl(sessionSlug))
       return
@@ -71,73 +69,128 @@ function App() {
   }
 
   if (loading) {
-     return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',color:'#fff',background:'#141414'}}>Loading...</div>
-  }
-
-  if (!session) {
-    const pathSession = getSessionIdFromPath()
     return (
-      <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:'#141414',color:'#fbfbfb',fontFamily:'sans-serif'}}>
-        <form onSubmit={handleLogin} style={{display:'flex',flexDirection:'column',gap:12,padding:32,background:'#1e1e1e',borderRadius:12,border:'1px solid #333',maxWidth:360,width:'100%'}}>
-          <h2 style={{margin:0,marginBottom:4}}>Log into MindSpace</h2>
-          {pathSession ? (
-            <p style={{margin:0,fontSize:14,color:'#9ca3af'}}>
-              Joining session: <strong style={{color:'#2e9d91'}}>/{pathSession}</strong>
-            </p>
-          ) : null}
-          <input 
-            type="email" 
-            placeholder="Email" 
-            value={email} 
-            onChange={e => setEmail(e.target.value)}
-            style={{padding:12,borderRadius:6,border:'1px solid #444',background:'#141414',color:'#fff'}}
-            required
-          />
-          <input 
-            type="password" 
-            placeholder="Password" 
-            value={password} 
-            onChange={e => setPassword(e.target.value)}
-            style={{padding:12,borderRadius:6,border:'1px solid #444',background:'#141414',color:'#fff'}}
-            required
-          />
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            <label htmlFor="join-session" style={{fontSize:13,color:'#9ca3af'}}>
-              Session name {pathSession ? '(from link)' : '(optional)'}
-            </label>
-            <input
-              id="join-session"
-              type="text"
-              placeholder="e.g. training-june-03"
-              value={joinSession}
-              onChange={e => setJoinSession(e.target.value)}
-              readOnly={!!pathSession}
-              style={{
-                padding:12,
-                borderRadius:6,
-                border:'1px solid #444',
-                background: pathSession ? '#1a1a1a' : '#141414',
-                color:'#fff',
-                opacity: pathSession ? 0.9 : 1,
-              }}
-            />
-            <span style={{fontSize:12,color:'#6b7280'}}>
-              Leave blank to open your personal board, or enter a name to join a training session.
-            </span>
+      <div className="app-shell">
+        <div className="app-loader" role="status" aria-live="polite">
+          <div className="app-loader-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 16 16" fill="none">
+              <path d="M3 13L8 3L13 13" stroke="#fbfbfb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M5 9.5h6" stroke="#fbfbfb" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
           </div>
-          <button type="submit" style={{padding:12,borderRadius:6,background:'#2e9d91',color:'#fff',border:'none',fontWeight:'bold',cursor:'pointer'}}>
-            {pathSession ? 'Log in & join session' : joinSession.trim() ? 'Log in & join session' : 'Log in'}
-          </button>
-        </form>
+          <p className="app-loader-text">Loading MindSpace…</p>
+        </div>
       </div>
     )
   }
 
-  return (
-    <>
-      <Board session={session} />
-    </>
-  )
+  if (!session) {
+    const pathSession = getSessionIdFromPath()
+    const ctaLabel = pathSession || joinSession.trim()
+      ? 'Log in & join session'
+      : 'Log in'
+
+    return (
+      <div className="auth-page">
+        <aside className="auth-hero" aria-hidden="true">
+          <div className="auth-hero-grid" />
+          <div className="auth-hero-glow auth-hero-glow--teal" />
+          <div className="auth-hero-glow auth-hero-glow--blue" />
+          <div className="auth-hero-glow auth-hero-glow--orange" />
+          <div className="auth-hero-content">
+            <div className="auth-hero-logo">
+              <div className="auth-hero-logo-mark">
+                <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                  <path d="M3 13L8 3L13 13" stroke="#fbfbfb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M5 9.5h6" stroke="#fbfbfb" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </div>
+              <span className="auth-hero-brand">LPA <em>MindSpace</em></span>
+            </div>
+            <h1 className="auth-hero-title">Collaborative training boards for modern teams</h1>
+            <p className="auth-hero-desc">
+              Facilitate live sessions, brainstorm on an infinite canvas, and guide participants in real time.
+            </p>
+            <ul className="auth-hero-features">
+              <li><span className="auth-dot auth-dot--teal" />Live session boards</li>
+              <li><span className="auth-dot auth-dot--blue" />Real-time collaboration</li>
+              <li><span className="auth-dot auth-dot--orange" />Facilitator tools</li>
+            </ul>
+          </div>
+        </aside>
+
+        <main className="auth-main">
+          <div className="auth-card">
+            <div className="auth-card-header">
+              <h2>Welcome back</h2>
+              <p>Sign in to open your workspace or join a training session.</p>
+            </div>
+
+            {pathSession ? (
+              <div className="auth-session-badge">
+                <span className="auth-session-badge-label">Joining session</span>
+                <span className="auth-session-badge-slug">/{pathSession}</span>
+              </div>
+            ) : null}
+
+            <form className="auth-form" onSubmit={handleLogin}>
+              <div className="auth-field">
+                <label htmlFor="auth-email">Email</label>
+                <input
+                  id="auth-email"
+                  type="email"
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  required
+                />
+              </div>
+
+              <div className="auth-field">
+                <label htmlFor="auth-password">Password</label>
+                <input
+                  id="auth-password"
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+
+              <div className="auth-field">
+                <label htmlFor="join-session">
+                  Session name {pathSession ? '(from link)' : '(optional)'}
+                </label>
+                <input
+                  id="join-session"
+                  type="text"
+                  placeholder="e.g. training-june-03"
+                  value={joinSession}
+                  onChange={(e) => setJoinSession(e.target.value)}
+                  readOnly={!!pathSession}
+                  className={pathSession ? 'is-readonly' : ''}
+                />
+                <span className="auth-field-hint">
+                  Leave blank for your personal board, or enter a name to join a session.
+                </span>
+              </div>
+
+              <button type="submit" className="auth-submit" disabled={loading}>
+                {ctaLabel}
+              </button>
+            </form>
+          </div>
+
+          <p className="auth-footer">LPA MindSpace · Internal training workspace</p>
+        </main>
+      </div>
+    )
+  }
+
+  return <Board session={session} />
 }
 
 export default App

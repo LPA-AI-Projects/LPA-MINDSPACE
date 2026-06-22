@@ -82,6 +82,11 @@ body{
   min-height:100vh;
 }
 
+/* Pen strokes keep toolbar thickness in screen pixels (not zoom-scaled) */
+#drawing-layer path {
+  vector-effect: non-scaling-stroke;
+}
+
 /* ══════════════════════════════════════
    TOP BAR
 ══════════════════════════════════════ */

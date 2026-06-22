@@ -512,6 +512,33 @@ canvasRoot.addEventListener('touchmove', e => {
 canvasRoot.addEventListener('touchend', () => { lastPinchDist = null; });
 
 // ═══════════════════════════════════════════════════
+// PEN STATE (must be before stroke drawing — used by startStroke)
+// ═══════════════════════════════════════════════════
+const PEN_COLORS = [
+  { name:'black',   hex:'#141414' },
+  { name:'white',   hex:'#fbfbfb' },
+  { name:'teal',    hex:'#2e9d91' },
+  { name:'orange',  hex:'#f2541d' },
+  { name:'blue',    hex:'#4f71f2' },
+];
+
+const penState = {
+  color:   '#141414',
+  width:   2.5,
+  opacity: 1,
+};
+
+function configureStrokePath(pathEl, props) {
+  pathEl.setAttribute('fill', 'none');
+  pathEl.setAttribute('stroke', props.color || '#141414');
+  pathEl.setAttribute('stroke-width', props.width ?? 2.5);
+  pathEl.setAttribute('vector-effect', 'non-scaling-stroke');
+  pathEl.setAttribute('stroke-linecap', 'round');
+  pathEl.setAttribute('stroke-linejoin', 'round');
+  pathEl.setAttribute('opacity', props.opacity !== undefined ? props.opacity : 1);
+}
+
+// ═══════════════════════════════════════════════════
 // FREEHAND DRAWING (Pen tool)
 // ═══════════════════════════════════════════════════
 let currentPath = null;
@@ -543,12 +570,7 @@ function startStroke(e) {
 
   const svg = getDrawingSvg();
   strokeSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  strokeSvgEl.setAttribute('fill', 'none');
-  strokeSvgEl.setAttribute('stroke', penState.color);
-  strokeSvgEl.setAttribute('stroke-width', penState.width);
-  strokeSvgEl.setAttribute('stroke-linecap', 'round');
-  strokeSvgEl.setAttribute('stroke-linejoin', 'round');
-  strokeSvgEl.setAttribute('opacity', penState.opacity);
+  configureStrokePath(strokeSvgEl, penState);
   strokeSvgEl.setAttribute('pointer-events', 'stroke');
   strokeSvgEl.style.cursor = 'pointer';
   svg.appendChild(strokeSvgEl);
@@ -1072,12 +1094,7 @@ function redrawAll() {
 
 function addStrokeToSvg(svg, obj) {
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', obj.color || '#141414');
-  path.setAttribute('stroke-width', obj.width || 2.5);
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  path.setAttribute('opacity', obj.opacity !== undefined ? obj.opacity : 1);
+  configureStrokePath(path, obj);
   path.setAttribute('pointer-events', 'stroke');
   path.setAttribute('d', pointsToPath(obj.points));
   path.dataset.objId = obj.id;
@@ -2949,29 +2966,8 @@ function duplicateSelectedObj() {
         canvasWorld.appendChild(newEl);
       }
     } else if (obj.type === 'stroke') {
-      // deep copy points with offset
       copy.points = obj.points.map(p => ({ x: p.x + 24, y: p.y + 24 }));
-      // render the new path in the SVG layer
-      const svg = getDrawingSvg();
-      const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      pathEl.setAttribute('fill', 'none');
-      pathEl.setAttribute('stroke', copy.color || '#141414');
-      pathEl.setAttribute('stroke-width', copy.width || 2.5);
-      pathEl.setAttribute('stroke-linecap', 'round');
-      pathEl.setAttribute('stroke-linejoin', 'round');
-      pathEl.setAttribute('opacity', '1');
-      pathEl.setAttribute('d', pointsToPath(copy.points));
-      pathEl.setAttribute('pointer-events', 'stroke');
-      pathEl.dataset.objId = copy.id;
-      pathEl.style.cursor = 'pointer';
-      pathEl.addEventListener('mousedown', ev => {
-        if (state.tool === 'select') {
-          ev.stopPropagation();
-          selectObject(copy.id, ev.ctrlKey || ev.metaKey);
-          startObjDrag(ev, copy.id);
-        }
-      });
-      svg.appendChild(pathEl);
+      addStrokeToSvg(getDrawingSvg(), copy);
     }
   });
   clearAllSelections();
@@ -5642,20 +5638,6 @@ startStroke = function(e) {
 // ═══════════════════════════════════════════════════
 // PEN TOOLBAR — colors, width, opacity
 // ═══════════════════════════════════════════════════
-
-const PEN_COLORS = [
-  { name:'black',   hex:'#141414' },
-  { name:'white',   hex:'#fbfbfb' },
-  { name:'teal',    hex:'#2e9d91' },
-  { name:'orange',  hex:'#f2541d' },
-  { name:'blue',    hex:'#4f71f2' },
-];
-
-const penState = {
-  color:   '#141414',
-  width:   2.5,
-  opacity: 1,
-};
 
 function initPenToolbar() {
   const wrap = document.getElementById('pt-colors');

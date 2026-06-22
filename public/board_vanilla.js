@@ -1205,16 +1205,16 @@ function copySessionLink() {
 }
 
 function updateFacilitatorUi() {
-  const sessionBtn = document.getElementById('copy-session-link-btn');
-  if (sessionBtn) {
-    const access = getLiveBoardAccess();
-    const showSessionLink = isFacilitator() && !!access.sessionId && !!access.boardId;
-    sessionBtn.classList.toggle('visible', showSessionLink);
+  const access = getLiveBoardAccess();
+  const showSessionLink = isFacilitator() && !!access.sessionId && !!access.boardId;
+
+  const sessionSection = document.getElementById('share-session-section');
+  if (sessionSection) {
+    sessionSection.classList.toggle('visible', showSessionLink);
   }
 
   const activityBtn = document.getElementById('activity-panel-btn');
   if (activityBtn) {
-    const access = getLiveBoardAccess();
     activityBtn.classList.toggle('visible', !!access.sessionId);
   }
 }
@@ -1622,6 +1622,7 @@ function shareBoard() {
   }
   closeActivityPanel();
   ensureShareDefaults();
+  updateFacilitatorUi();
   const panel = document.getElementById('share-dialog');
   panel.classList.add('visible');
   document.getElementById('panel-backdrop').style.display = 'block';
@@ -1707,6 +1708,11 @@ function renderShareDialog() {
   const permSelect = document.getElementById('share-permission');
   permSelect.value = permission;
   linkInput.value = getShareLink(permission);
+
+  const sessionInput = document.getElementById('share-session-link-input');
+  if (sessionInput) {
+    sessionInput.value = getSessionLink() || '';
+  }
 
   const accessList = document.getElementById('share-access-list');
   const ownerEmail = boardAccess.userEmail || 'you';

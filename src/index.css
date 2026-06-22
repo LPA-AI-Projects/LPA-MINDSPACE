@@ -240,9 +240,17 @@ body{
 }
 .share-close:hover{background:rgba(255,255,255,0.08);color:#fbfbfb}
 .share-section{
-  border-top:1px solid rgba(255,255,255,0.08);
+  border-top:1px solid rgba(251,251,251,0.08);
   padding-top:10px;
   margin-top:10px;
+}
+#share-session-section{display:none}
+#share-session-section.visible{display:block}
+.share-section-desc{
+  color:var(--ui-text2);
+  font-size:12px;
+  line-height:1.45;
+  margin:-2px 0 8px;
 }
 .share-label{
   color:rgba(251,251,251,0.62);
@@ -260,7 +268,7 @@ body{
 #share-dialog .share-row{
   margin-top:8px;
 }
-#share-link-input,#share-email-input,#share-permission,#share-invite-permission{
+#share-link-input,#share-email-input,#share-session-link-input,#share-permission,#share-invite-permission{
   background:rgba(255,255,255,0.04);
   border:1px solid rgba(255,255,255,0.12);
   color:#fbfbfb;

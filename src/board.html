@@ -232,26 +232,17 @@
 
 <!-- AI PROMPT BAR -->
 <div id="ai-bar">
-  <span class="ai-bar-icon">✦</span>
-  <input id="ai-input" placeholder="Flowcharts, diagrams, brainstorms… e.g. 'create a 5-step onboarding flowchart'"
+  <span class="ai-bar-icon" aria-hidden="true">✦</span>
+  <input id="ai-input" placeholder="Ask AI…"
     maxlength="500"
     autocomplete="off" spellcheck="false"
     onkeydown="handleAiKey(event)"/>
   <button class="ai-bar-send" id="ai-send-btn" onclick="submitAiPrompt()" title="Generate (Enter)">
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
       <path d="M12 7H2M8 3l4 4-4 4" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
   </button>
-</div>
-
-<!-- quick chips below AI bar -->
-<div class="ai-chips" style="position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:199;">
-  <span class="ai-chip" onclick="setAiPrompt('create a 5-step onboarding flowchart')">Onboarding flowchart</span>
-  <span class="ai-chip" onclick="setAiPrompt('brainstorm 6 ideas for employee engagement')">Brainstorm ideas</span>
-  <span class="ai-chip" onclick="setAiPrompt('create a 2x2 priority matrix')">Priority matrix</span>
-  <span class="ai-chip" onclick="setAiPrompt('draw a customer journey map')">Customer journey</span>
-  <span class="ai-chip" onclick="setAiPrompt('create a mind map for product strategy')">Mind map</span>
 </div>
 
 <!-- AI LOADING INDICATOR -->

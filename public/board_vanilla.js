@@ -665,6 +665,121 @@ function placeText(e) {
 // ═══════════════════════════════════════════════════
 state.isErasing = false;
 
+function strokePointDistSq(px, py, x, y) {
+  const dx = px - x;
+  const dy = py - y;
+  return dx * dx + dy * dy;
+}
+
+function strokeSegmentDistSq(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return strokePointDistSq(px, py, x1, y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx;
+  const cy = y1 + t * dy;
+  return strokePointDistSq(px, py, cx, cy);
+}
+
+function strokeHitsEraser(points, wx, wy, radiusSq) {
+  for (let i = 0; i < points.length; i += 1) {
+    if (strokePointDistSq(wx, wy, points[i].x, points[i].y) < radiusSq) return true;
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    if (strokeSegmentDistSq(wx, wy, p1.x, p1.y, p2.x, p2.y) < radiusSq) return true;
+  }
+  return false;
+}
+
+function markStrokePointsErased(points, wx, wy, radiusSq) {
+  const erased = new Array(points.length).fill(false);
+  for (let i = 0; i < points.length; i += 1) {
+    if (strokePointDistSq(wx, wy, points[i].x, points[i].y) < radiusSq) {
+      erased[i] = true;
+    }
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    if (strokeSegmentDistSq(wx, wy, p1.x, p1.y, p2.x, p2.y) < radiusSq) {
+      erased[i] = true;
+      erased[i + 1] = true;
+    }
+  }
+  return erased;
+}
+
+function splitStrokePoints(points, erased) {
+  const segments = [];
+  let current = [];
+  for (let i = 0; i < points.length; i += 1) {
+    if (!erased[i]) {
+      current.push(points[i]);
+    } else if (current.length) {
+      if (current.length >= 2) segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length >= 2) segments.push(current);
+  return segments;
+}
+
+function makeStrokeFromSegment(points, template) {
+  return stampOwner({
+    id: uid(),
+    type: 'stroke',
+    points: points.map((p) => ({ x: p.x, y: p.y })),
+    color: template.color,
+    width: template.width,
+    opacity: template.opacity,
+  });
+}
+
+function applyPartialStrokeErase(wx, wy, radius) {
+  const radiusSq = radius * radius;
+  const svg = getDrawingSvg();
+  const updates = [];
+
+  state.objects.forEach((obj) => {
+    if (obj.type !== 'stroke' || !canEditObject(obj) || !obj.points?.length) return;
+    if (!strokeHitsEraser(obj.points, wx, wy, radiusSq)) return;
+
+    const erased = markStrokePointsErased(obj.points, wx, wy, radiusSq);
+    if (!erased.some(Boolean)) return;
+
+    const segments = splitStrokePoints(obj.points, erased);
+    const unchanged = segments.length === 1
+      && segments[0].length === obj.points.length
+      && segments[0].every((p, i) => p.x === obj.points[i].x && p.y === obj.points[i].y);
+    if (unchanged) return;
+
+    updates.push({ obj, segments });
+  });
+
+  if (!updates.length) return false;
+
+  const removeIds = new Set(updates.map((entry) => entry.obj.id));
+  const newStrokes = [];
+
+  updates.forEach(({ obj, segments }) => {
+    document.querySelector(`path[data-obj-id="${obj.id}"]`)?.remove();
+    segments.forEach((pts) => {
+      if (pts.length < 2) return;
+      const stroke = makeStrokeFromSegment(pts, obj);
+      newStrokes.push(stroke);
+      addStrokeToSvg(svg, stroke);
+    });
+  });
+
+  state.objects = state.objects.filter((o) => !removeIds.has(o.id)).concat(newStrokes);
+  updateObjectCount();
+  return true;
+}
+
 function startErase(e) {
   e.preventDefault();
   state.isErasing = true;
@@ -684,27 +799,7 @@ function doErase(e) {
   const wx = (e.clientX - state.panX) / state.zoom;
   const wy = (e.clientY - state.panY) / state.zoom;
 
-  // ── Erase strokes by checking stored points (fast, no getTotalLength) ──
-  const toRemove = new Set();
-  state.objects.forEach(obj => {
-    if (obj.type !== 'stroke' || !canEditObject(obj)) return;
-    for (let i = 0; i < obj.points.length; i++) {
-      const dx = obj.points[i].x - wx;
-      const dy = obj.points[i].y - wy;
-      if (dx*dx + dy*dy < RADIUS*RADIUS) {
-        toRemove.add(obj.id);
-        break;
-      }
-    }
-  });
-
-  if (toRemove.size > 0) {
-    toRemove.forEach(id => {
-      const el = document.querySelector(`path[data-obj-id="${id}"]`);
-      if (el) el.remove();
-    });
-    state.objects = state.objects.filter(o => !toRemove.has(o.id));
-    updateObjectCount();
+  if (applyPartialStrokeErase(wx, wy, RADIUS)) {
     state.erasedSomething = true;
   }
 
@@ -1154,13 +1249,18 @@ function selectAll() {
   showToast(`Selected ${editableObjects.length} object${editableObjects.length === 1 ? '' : 's'}`);
 }
 
+function updateGridToggleUi() {
+  const btn = document.getElementById('gridToggle');
+  if (!btn) return;
+  btn.style.color = state.gridVisible ? 'var(--teal)' : '';
+}
+
 function toggleGrid() {
   state.gridVisible = !state.gridVisible;
   canvasRoot.style.backgroundImage = state.gridVisible
     ? 'radial-gradient(circle, var(--dot-color) 1.2px, transparent 1.2px)'
     : 'none';
-  const btn = document.getElementById('gridToggle');
-  btn.style.color = state.gridVisible ? '' : 'var(--teal)';
+  updateGridToggleUi();
   showToast(state.gridVisible ? 'Grid on' : 'Grid off');
 }
 
@@ -1832,6 +1932,7 @@ function init() {
   loadFromStorage();
   lastPublishedBoardState = getCurrentBoardState();
   applyAccessModeUi();
+  updateGridToggleUi();
   initRealtimePresence();
   initRealtimeBoardSync();
   initActivityPanel();
@@ -6910,6 +7011,7 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   restoreCanvasIfDomWasCleared();
   applyTransform();
   applyAccessModeUi();
+  updateGridToggleUi();
   initRealtimeBoardSync();
   initRealtimePresence();
   initActivityPanel();

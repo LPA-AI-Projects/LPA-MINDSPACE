@@ -26,10 +26,25 @@ const ZOOM_STEP = 0.12;
 const GRID_BASE = 28; // px at zoom=1
 
 // ═══════════════════════════════════════════════════
-// DOM REFS
+// DOM REFS (refreshed when React remounts board HTML)
 // ═══════════════════════════════════════════════════
-const canvasRoot = document.getElementById('canvas-root');
-const canvasWorld = document.getElementById('canvas-world');
+let canvasRoot = null;
+let canvasWorld = null;
+
+function bindBoardDom() {
+  canvasRoot = document.getElementById('canvas-root');
+  canvasWorld = document.getElementById('canvas-world');
+  return !!(canvasRoot && canvasWorld);
+}
+
+function isEventOnCanvas(e) {
+  if (!canvasRoot) bindBoardDom();
+  if (!canvasRoot) return false;
+  const t = e.target;
+  return t === canvasRoot || canvasRoot.contains(t);
+}
+
+bindBoardDom();
 const zoomLabel = document.getElementById('zoomLabel');
 const sbX = document.getElementById('sb-x');
 const sbY = document.getElementById('sb-y');
@@ -188,6 +203,8 @@ function isBoardAdmin() {
 // TRANSFORM
 // ═══════════════════════════════════════════════════
 function applyTransform() {
+  bindBoardDom();
+  if (!canvasWorld) return;
   canvasWorld.style.transform =
     `translate(${state.panX}px,${state.panY}px) scale(${state.zoom})`;
   updateGrid();
@@ -195,7 +212,8 @@ function applyTransform() {
 }
 
 function updateGrid() {
-  // offset the dot grid so it tracks with pan
+  bindBoardDom();
+  if (!canvasRoot) return;
   const gs = GRID_BASE * state.zoom;
   const ox = ((state.panX % gs) + gs) % gs;
   const oy = ((state.panY % gs) + gs) % gs;
@@ -504,8 +522,10 @@ function showHint(msg) {
 // ═══════════════════════════════════════════════════
 // CANVAS MOUSE EVENTS
 // ═══════════════════════════════════════════════════
-canvasRoot.addEventListener('mousedown', e => {
+function handleCanvasPointerDown(e) {
+  if (!isEventOnCanvas(e)) return;
   if (e.button !== 0) return;
+  if (typeof e.isPrimary === 'boolean' && !e.isPrimary) return;
   e.preventDefault();
 
   const tool = state.tool;
@@ -550,6 +570,12 @@ canvasRoot.addEventListener('mousedown', e => {
     // file picker already triggered by setTool — clicking canvas is a no-op
     return;
   }
+}
+
+document.addEventListener('mousedown', handleCanvasPointerDown);
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse') return;
+  handleCanvasPointerDown(e);
 });
 
 function updateEraserCursor(clientX, clientY) {
@@ -575,6 +601,9 @@ document.addEventListener('mousemove', e => {
 
 document.addEventListener('pointermove', e => {
   if (state.tool === 'eraser') updateEraserCursor(e.clientX, e.clientY);
+  if (e.pointerType === 'mouse') return;
+  if (state.isDrawing) { continueStroke(e); return; }
+  if (state.isErasing) { continueErase(e); return; }
 }, { passive: true });
 
 // document-level so mouseup is caught even if released outside canvas
@@ -585,15 +614,25 @@ document.addEventListener('mouseup', e => {
   if (state.isShaping) { endShapeDraw(e); return; }
 });
 
+document.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') return;
+  if (state.isPanning) { endPan(); return; }
+  if (state.isDrawing) { endStroke(e); return; }
+  if (state.isErasing) { endErase(e); return; }
+  if (state.isShaping) { endShapeDraw(e); return; }
+});
+
 // ═══════════════════════════════════════════════════
 // SCROLL TO ZOOM
 // ═══════════════════════════════════════════════════
-canvasRoot.addEventListener('contextmenu', e => {
+document.addEventListener('contextmenu', e => {
+  if (!isEventOnCanvas(e)) return;
   e.preventDefault();
   showContextMenu(e);
 });
 
-canvasRoot.addEventListener('wheel', e => {
+document.addEventListener('wheel', e => {
+  if (!isEventOnCanvas(e)) return;
   e.preventDefault();
   const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
   zoomTo(state.zoom * factor, e.clientX, e.clientY);
@@ -601,7 +640,8 @@ canvasRoot.addEventListener('wheel', e => {
 
 // pinch zoom (trackpad)
 let lastPinchDist = null;
-canvasRoot.addEventListener('touchmove', e => {
+document.addEventListener('touchmove', e => {
+  if (!isEventOnCanvas(e)) return;
   if (e.touches.length === 2) {
     e.preventDefault();
     const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -615,7 +655,7 @@ canvasRoot.addEventListener('touchmove', e => {
     lastPinchDist = dist;
   }
 }, { passive: false });
-canvasRoot.addEventListener('touchend', () => { lastPinchDist = null; });
+document.addEventListener('touchend', () => { lastPinchDist = null; });
 
 // ═══════════════════════════════════════════════════
 // PEN STATE (must be before stroke drawing — used by startStroke)
@@ -656,12 +696,14 @@ state.isDrawing = false;
 state.isErasing = false;
 
 function getDrawingSvg() {
+  bindBoardDom();
+  if (!canvasWorld) return null;
   // one persistent SVG layer for all strokes
   let svg = document.getElementById('drawing-layer');
   if (!svg) {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.id = 'drawing-layer';
-    svg.style.cssText = 'position:absolute;top:0;left:0;width:200vw;height:200vh;overflow:visible;'; svg.setAttribute('pointer-events','none');
+    svg.style.cssText = 'position:absolute;top:0;left:0;width:200vw;height:200vh;overflow:visible;z-index:5;pointer-events:none;';
     canvasWorld.appendChild(svg);
   }
   return svg;
@@ -675,6 +717,7 @@ function startStroke(e) {
   currentPoints.push(wp);
 
   const svg = getDrawingSvg();
+  if (!svg) return;
   strokeSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   configureStrokePath(strokeSvgEl, penState);
   strokeSvgEl.setAttribute('pointer-events', 'stroke');
@@ -683,7 +726,7 @@ function startStroke(e) {
 }
 
 function continueStroke(e) {
-  if (!state.isDrawing) return;
+  if (!state.isDrawing || !strokeSvgEl) return;
   const wp = screenToWorld(e.clientX, e.clientY);
   currentPoints.push(wp);
   strokeSvgEl.setAttribute('d', pointsToPath(currentPoints));
@@ -3143,8 +3186,8 @@ function duplicateSelectedObj() {
 
 // ─── Deselect when clicking empty canvas (already handled in handleSelectMousedown)
 // but also handle it from the canvasRoot global listener
-canvasRoot.addEventListener('mousedown', (e) => {
-  if (state.tool !== 'select') return;
+document.addEventListener('mousedown', (e) => {
+  if (state.tool !== 'select' || !isEventOnCanvas(e)) return;
   const isOnObj = e.target.closest('.sticky-note') ||
                   e.target.closest('.canvas-text') ||
                   e.target.closest('#sel-toolbar') ||
@@ -7045,7 +7088,8 @@ function deselectAllStickies() {
 }
 
 // click on canvas background deselects
-canvasRoot.addEventListener('mousedown', (e) => {
+document.addEventListener('mousedown', (e) => {
+  if (!isEventOnCanvas(e)) return;
   // only deselect if clicking truly empty canvas (not an object)
   const isOnObject = e.target.closest('.sticky-note') ||
                      e.target.closest('.canvas-text') ||
@@ -7237,6 +7281,7 @@ scheduleInitStickyColorPicker();
 
 window.__LPA_BOARD_VANILLA_LOADED__ = true;
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
+  bindBoardDom();
   restoreCanvasIfDomWasCleared();
   applyTransform();
   applyAccessModeUi();

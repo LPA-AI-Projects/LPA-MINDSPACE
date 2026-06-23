@@ -334,6 +334,14 @@ export default function Board({ session }) {
     return () => window.removeEventListener('storage', onStorage);
   }, [boardLoaded]);
 
+  // Mount shell HTML before loading board_vanilla.js (script expects #canvas-root in DOM).
+  useEffect(() => {
+    if (!boardLoaded || !boardMountRef.current) return;
+    if (boardMountRef.current.querySelector('#canvas-world')) return;
+    boardMountRef.current.innerHTML = boardHtml;
+    window.__LPA_BOARD_REINIT__?.();
+  }, [boardLoaded]);
+
   useEffect(() => {
     if (!boardLoaded) return;
 
@@ -350,14 +358,6 @@ export default function Board({ session }) {
     document.body.appendChild(script);
 
     return undefined;
-  }, [boardLoaded]);
-
-  // Mount shell HTML when the mount node is empty (e.g. after a brief React remount).
-  useEffect(() => {
-    if (!boardLoaded || !boardMountRef.current) return;
-    if (boardMountRef.current.querySelector('#canvas-world')) return;
-    boardMountRef.current.innerHTML = boardHtml;
-    window.__LPA_BOARD_REINIT__?.();
   }, [boardLoaded]);
 
   if (loadError) {

@@ -1384,8 +1384,8 @@ function toggleGrid() {
 
 function saveBoardName(val) {
   if (!isBoardAdmin()) return;
-  state.boardName = val || 'LPA MindSpace';
-  document.title = state.boardName + ' — LPA MindSpace';
+  state.boardName = val || 'LP MindSpace';
+  document.title = state.boardName + ' — LP MindSpace';
   saveToStorage();
 }
 
@@ -2018,14 +2018,14 @@ function loadFromStorage() {
       return;
     }
     const data = JSON.parse(raw);
-    state.boardName = data.boardName || 'LPA MindSpace';
+    state.boardName = data.boardName || 'LP MindSpace';
     state.panX = data.panX || 0;
     state.panY = data.panY || 0;
     state.zoom = data.zoom || 1;
     state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
     document.getElementById('boardName').value = state.boardName;
-    document.title = state.boardName + ' — LPA MindSpace';
+    document.title = state.boardName + ' — LP MindSpace';
     applyTransform();
     updateObjectCount();
     // Defer redrawAll until after ALL JS is initialized
@@ -2054,7 +2054,7 @@ function init() {
   initRealtimePresence();
   initRealtimeBoardSync();
   initActivityPanel();
-  showHint('Welcome to LPA MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
+  showHint('Welcome to LP MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
 /** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
@@ -2208,7 +2208,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
     (o) => o.type === 'image' && o.id && !remoteIds.has(o.id) && o.src
   );
 
-  state.boardName = remoteState.boardName || state.boardName || 'LPA MindSpace';
+  state.boardName = remoteState.boardName || state.boardName || 'LP MindSpace';
   state.panX = Number.isFinite(remoteState.panX) ? remoteState.panX : 0;
   state.panY = Number.isFinite(remoteState.panY) ? remoteState.panY : 0;
   state.zoom = Number.isFinite(remoteState.zoom) ? remoteState.zoom : 1;
@@ -2217,7 +2217,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
 
   const boardNameInput = document.getElementById('boardName');
   if (boardNameInput) boardNameInput.value = state.boardName;
-  document.title = state.boardName + ' — LPA MindSpace';
+  document.title = state.boardName + ' — LP MindSpace';
   applyTransform();
   redrawAll();
   updateObjectCount();
@@ -2419,7 +2419,7 @@ function buildBoardOps(previousState, nextState) {
   }
 
   if ((previousState?.boardName || '') !== (nextState?.boardName || '')) {
-    ops.push({ t: 'boardName', boardName: nextState.boardName || 'LPA MindSpace' });
+    ops.push({ t: 'boardName', boardName: nextState.boardName || 'LP MindSpace' });
   }
 
   if (JSON.stringify(previousState?.sharing || null) !== JSON.stringify(nextState?.sharing || null)) {
@@ -2468,7 +2468,7 @@ function applyRemoteBoardOps(ops, meta = {}) {
       state.boardName = op.boardName || state.boardName;
       const boardNameInput = document.getElementById('boardName');
       if (boardNameInput) boardNameInput.value = state.boardName;
-      document.title = `${state.boardName} — LPA MindSpace`;
+      document.title = `${state.boardName} — LP MindSpace`;
       changed = true;
       return;
     }
@@ -5020,7 +5020,7 @@ function triggerImportJSON() {
         state.panX = data.panX||0; state.panY = data.panY||0; state.zoom = data.zoom||1;
         state.objects = data.objects||[];
         document.getElementById('boardName').value = state.boardName;
-        document.title = state.boardName + ' — LPA MindSpace';
+        document.title = state.boardName + ' — LP MindSpace';
         applyTransform(); redrawAll(); updateObjectCount();
         History.baseline(); saveToStorage();
         showToast('Board imported: ' + state.boardName);

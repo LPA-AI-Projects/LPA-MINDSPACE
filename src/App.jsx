@@ -105,7 +105,7 @@ function App() {
                   <path d="M5 9.5h6" stroke="#fbfbfb" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
               </div>
-              <span className="auth-hero-brand">LPA <em>MindSpace</em></span>
+              <span className="auth-hero-brand">LP <em>MindSpace</em></span>
             </div>
             <h1 className="auth-hero-title">Collaborative training boards for modern teams</h1>
             <p className="auth-hero-desc">
@@ -184,7 +184,7 @@ function App() {
             </form>
           </div>
 
-          <p className="auth-footer">LPA MindSpace · Internal training workspace</p>
+          <p className="auth-footer">LP MindSpace · Internal training workspace</p>
         </main>
       </div>
     )

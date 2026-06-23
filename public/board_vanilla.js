@@ -5048,8 +5048,12 @@ document.addEventListener('keydown', ev => {
 
 const MM_W = 200, MM_H = 130;     // minimap display size in px
 const MM_UPDATE_MS = 80;           // throttle render interval
+const MM_POS_KEY = 'lp-minimap-pos';
 let mmVisible  = true;
 let mmDragging = false;
+let mmWrapDragging = false;
+let mmWrapDidMove = false;
+let mmWrapDragStart = { x: 0, y: 0, left: 0, top: 0 };
 let mmTimer    = null;
 let mmLastBounds = null;
 
@@ -5073,6 +5077,74 @@ function toggleMinimap() {
   mmEl.classList.toggle('hidden', !mmVisible);
   mmToggle.textContent = mmVisible ? '▲ hide map' : '▼ show map';
 }
+
+function applyMinimapWrapPosition(left, top) {
+  if (!mmWrap) return;
+  const maxLeft = Math.max(8, window.innerWidth - mmWrap.offsetWidth - 8);
+  const maxTop = Math.max(58, window.innerHeight - mmWrap.offsetHeight - 8);
+  const clampedLeft = Math.max(8, Math.min(left, maxLeft));
+  const clampedTop = Math.max(58, Math.min(top, maxTop));
+  mmWrap.style.left = `${Math.round(clampedLeft)}px`;
+  mmWrap.style.top = `${Math.round(clampedTop)}px`;
+}
+
+function initMinimapPosition() {
+  if (!mmWrap) return;
+  try {
+    const saved = localStorage.getItem(MM_POS_KEY);
+    if (saved) {
+      const { left, top } = JSON.parse(saved);
+      if (Number.isFinite(left) && Number.isFinite(top)) {
+        applyMinimapWrapPosition(left, top);
+        return;
+      }
+    }
+  } catch (e) { /* ignore */ }
+  applyMinimapWrapPosition(72, window.innerHeight - mmWrap.offsetHeight - 16);
+}
+
+function saveMinimapPosition() {
+  if (!mmWrap) return;
+  const left = parseFloat(mmWrap.style.left) || 72;
+  const top = parseFloat(mmWrap.style.top) || 0;
+  try {
+    localStorage.setItem(MM_POS_KEY, JSON.stringify({ left, top }));
+  } catch (e) { /* ignore */ }
+}
+
+if (mmToggle) {
+  mmToggle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    mmWrapDragging = true;
+    mmWrapDidMove = false;
+    const rect = mmWrap.getBoundingClientRect();
+    mmWrapDragStart = {
+      x: e.clientX,
+      y: e.clientY,
+      left: rect.left,
+      top: rect.top,
+    };
+    mmToggle.classList.add('dragging');
+  });
+
+  mmToggle.addEventListener('click', (e) => {
+    if (mmWrapDidMove) {
+      mmWrapDidMove = false;
+      e.preventDefault();
+      e.stopPropagation();
+    } else {
+      toggleMinimap();
+    }
+  });
+}
+
+window.addEventListener('resize', () => {
+  if (!mmWrap) return;
+  applyMinimapWrapPosition(parseFloat(mmWrap.style.left) || 72, parseFloat(mmWrap.style.top) || 0);
+});
+
+initMinimapPosition();
 
 // ── Schedule a minimap redraw (throttled)
 function scheduleMinimap() {
@@ -5253,11 +5325,26 @@ mmEl.addEventListener('mousedown', e => {
 });
 
 document.addEventListener('mousemove', e => {
+  if (mmWrapDragging) {
+    const dx = e.clientX - mmWrapDragStart.x;
+    const dy = e.clientY - mmWrapDragStart.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) mmWrapDidMove = true;
+    applyMinimapWrapPosition(mmWrapDragStart.left + dx, mmWrapDragStart.top + dy);
+    return;
+  }
   if (!mmDragging) return;
   navigateToMinimap(e);
 });
 
-document.addEventListener('mouseup', () => { mmDragging = false; });
+document.addEventListener('mouseup', () => {
+  if (mmWrapDragging) {
+    mmWrapDragging = false;
+    mmToggle?.classList.remove('dragging');
+    if (mmWrapDidMove) saveMinimapPosition();
+    return;
+  }
+  mmDragging = false;
+});
 
 function navigateToMinimap(e) {
   const rect   = mmEl.getBoundingClientRect();

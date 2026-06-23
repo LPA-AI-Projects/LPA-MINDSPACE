@@ -552,8 +552,15 @@ canvasRoot.addEventListener('mousedown', e => {
   }
 });
 
+function updateEraserCursor(clientX, clientY) {
+  if (!eraserCursor) return;
+  eraserCursor.style.transform = `translate3d(${clientX}px, ${clientY}px, 0) translate(-50%, -50%)`;
+}
+
 // document-level so fast mouse movement outside canvas still works
 document.addEventListener('mousemove', e => {
+  if (state.tool === 'eraser') updateEraserCursor(e.clientX, e.clientY);
+
   const wp = screenToWorld(e.clientX, e.clientY);
   state.mouseX = Math.round(wp.x);
   state.mouseY = Math.round(wp.y);
@@ -564,13 +571,11 @@ document.addEventListener('mousemove', e => {
   if (state.isDrawing) { continueStroke(e); return; }
   if (state.isErasing) { continueErase(e); return; }
   if (state.isShaping) { continueShapeDraw(e); return; }
-
-  // eraser cursor follow
-  if (state.tool === 'eraser') {
-    eraserCursor.style.left = e.clientX + 'px';
-    eraserCursor.style.top  = e.clientY + 'px';
-  }
 });
+
+document.addEventListener('pointermove', e => {
+  if (state.tool === 'eraser') updateEraserCursor(e.clientX, e.clientY);
+}, { passive: true });
 
 // document-level so mouseup is caught even if released outside canvas
 document.addEventListener('mouseup', e => {
@@ -787,6 +792,8 @@ function placeText(e) {
 // ERASER TOOL
 // ═══════════════════════════════════════════════════
 state.isErasing = false;
+let eraseRafId = null;
+let erasePendingEvent = null;
 
 function strokePointDistSq(px, py, x, y) {
   const dx = px - x;
@@ -905,13 +912,21 @@ function applyPartialStrokeErase(wx, wy, radius) {
 
 function startErase(e) {
   e.preventDefault();
+  updateEraserCursor(e.clientX, e.clientY);
   state.isErasing = true;
   doErase(e);
 }
 
 function continueErase(e) {
   if (!state.isErasing) return;
-  doErase(e);
+  erasePendingEvent = e;
+  if (eraseRafId) return;
+  eraseRafId = requestAnimationFrame(() => {
+    eraseRafId = null;
+    const ev = erasePendingEvent;
+    erasePendingEvent = null;
+    if (state.isErasing && ev) doErase(ev);
+  });
 }
 
 function doErase(e) {
@@ -944,6 +959,14 @@ function doErase(e) {
 }
 
 function endErase() {
+  if (eraseRafId) {
+    cancelAnimationFrame(eraseRafId);
+    eraseRafId = null;
+  }
+  if (erasePendingEvent) {
+    doErase(erasePendingEvent);
+    erasePendingEvent = null;
+  }
   if (state.isErasing && state.erasedSomething) {
     History.push(); // ← erase completed
     saveToStorage();

@@ -307,8 +307,12 @@ export default function Board({ session }) {
       };
 
       if (cancelled) return;
+      const wasAlreadyLoaded = hasLoadedOnceRef.current;
       hasLoadedOnceRef.current = true;
       setBoardLoaded(true);
+      if (wasAlreadyLoaded && window.__LPA_BOARD_RELOAD_STATE__) {
+        queueMicrotask(() => window.__LPA_BOARD_RELOAD_STATE__());
+      }
     };
 
     loadSession();
@@ -335,7 +339,6 @@ export default function Board({ session }) {
     return () => window.removeEventListener('storage', onStorage);
   }, [boardLoaded]);
 
-  // Inject board HTML synchronously before paint so canvas exists before board_vanilla boots.
   useLayoutEffect(() => {
     if (!boardLoaded || !boardMountRef.current) return;
     if (!boardMountRef.current.querySelector('#canvas-world')) {
@@ -345,10 +348,15 @@ export default function Board({ session }) {
   }, [boardLoaded]);
 
   useEffect(() => {
-    if (!shellReady) return;
+    if (!boardLoaded) {
+      setShellReady(false);
+      return undefined;
+    }
+    if (!shellReady) return undefined;
 
+    const boot = () => window.__LPA_BOARD_BOOT__?.();
     if (window.__LPA_BOARD_VANILLA_LOADED__) {
-      window.__LPA_BOARD_BOOT__?.();
+      boot();
       return undefined;
     }
     if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
@@ -357,13 +365,11 @@ export default function Board({ session }) {
     script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
-    script.onload = () => {
-      window.__LPA_BOARD_BOOT__?.();
-    };
+    script.onload = boot;
     document.body.appendChild(script);
 
     return undefined;
-  }, [shellReady]);
+  }, [boardLoaded, shellReady]);
 
   if (loadError) {
     return (

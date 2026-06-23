@@ -67,6 +67,32 @@ function bindUiDom() {
   selRect = document.getElementById('sel-rect');
 }
 
+/** Paint state.objects onto the live canvas; retries until #canvas-world is mounted. */
+function scheduleBoardRedraw(maxAttempts = 90) {
+  const attempt = (tries = 0) => {
+    if (!bindBoardDom()) {
+      if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
+      return;
+    }
+    try {
+      redrawAll();
+      updateObjectCount();
+    } catch (err) {
+      console.error('[board] redraw failed', err);
+      if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
+    }
+  };
+  attempt();
+}
+
+function parseBoardStateRaw(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'object') return raw;
+  let data = JSON.parse(raw);
+  if (typeof data === 'string') data = JSON.parse(data);
+  return data;
+}
+
 let lastPinchDist = null;
 let canvasEventsReady = false;
 
@@ -723,8 +749,15 @@ state.isErasing = false;
 function getDrawingSvg() {
   bindBoardDom();
   if (!canvasWorld) return null;
-  // one persistent SVG layer for all strokes
   let svg = document.getElementById('drawing-layer');
+  if (svg && !svg.isConnected) {
+    svg.remove();
+    svg = null;
+  }
+  if (svg && svg.parentElement !== canvasWorld) {
+    svg.remove();
+    svg = null;
+  }
   if (!svg) {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.id = 'drawing-layer';
@@ -1240,6 +1273,8 @@ function redo() {
 }
 
 function redrawAll() {
+  if (!bindBoardDom() || !canvasWorld) return;
+
   // 1. clear selections safely
   if (typeof clearAllSelections === 'function') clearAllSelections();
 
@@ -1303,6 +1338,8 @@ function addStrokeToSvg(svg, obj) {
 }
 
 function addTextToCanvas(obj) {
+  bindBoardDom();
+  if (!canvasWorld) return null;
   const wrap = document.createElement('div');
   wrap.className = 'canvas-text';
   wrap.dataset.objId = obj.id;
@@ -2104,27 +2141,27 @@ function saveToStorage() {
 function loadFromStorage() {
   try {
     const raw = window.supabaseInitialState || localStorage.getItem('lpa-mindspace-v1');
-    if (!raw) {
+    const data = parseBoardStateRaw(raw);
+    if (!data) {
       History.baseline();
       return;
     }
-    const data = JSON.parse(raw);
     state.boardName = data.boardName || 'LP MindSpace';
     state.panX = data.panX || 0;
     state.panY = data.panY || 0;
     state.zoom = data.zoom || 1;
     state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
-    document.getElementById('boardName').value = state.boardName;
+    const boardNameInput = document.getElementById('boardName');
+    if (boardNameInput) boardNameInput.value = state.boardName;
     document.title = state.boardName + ' — LP MindSpace';
     applyTransform();
-    updateObjectCount();
-    // Defer redrawAll until after ALL JS is initialized
-    setTimeout(() => {
-      redrawAll();
-      History.baseline(); // baseline = what user sees on load, nothing to undo
-    }, 0);
-  } catch(e) {}
+    scheduleBoardRedraw();
+    History.baseline();
+  } catch (e) {
+    console.error('[board] loadFromStorage failed', e);
+    History.baseline();
+  }
 }
 
 // auto-save every 10s
@@ -2148,14 +2185,14 @@ function init() {
   showHint('Welcome to LP MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
-/** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
+/** Re-paint in-memory objects after React injects a fresh board shell. */
 function restoreCanvasIfDomWasCleared() {
-  const world = document.getElementById('canvas-world');
-  if (!world || !state.objects.length) return;
-  const hasObjects =
-    world.querySelector('.sticky-note, .shape-obj, .canvas-text, .image-obj') ||
+  bindBoardDom();
+  if (!canvasWorld) return;
+  const hasDom =
+    canvasWorld.querySelector('.sticky-note, .shape-obj, .canvas-text, .image-obj') ||
     document.getElementById('drawing-layer');
-  if (!hasObjects) redrawAll();
+  if (!hasDom && state.objects.length) scheduleBoardRedraw();
 }
 
 function serializeCurrentBoardState() {
@@ -2310,8 +2347,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   if (boardNameInput) boardNameInput.value = state.boardName;
   document.title = state.boardName + ' — LP MindSpace';
   applyTransform();
-  redrawAll();
-  updateObjectCount();
+  scheduleBoardRedraw();
   History.baseline();
   lastPublishedBoardState = cloneBoardStateSnapshot(remoteState);
   if (sourceLabel === 'latest') showToast('Board updated');
@@ -3555,6 +3591,8 @@ function buildLineSVG(type, x1, y1, x2, y2, stroke, sw) {
 
 // ── Render a shape object to the DOM
 function renderShapeObj(obj) {
+  bindBoardDom();
+  if (!canvasWorld) return null;
   const el = document.createElement('div');
   el.className = 'shape-obj';
   el.dataset.objId = obj.id;
@@ -4117,6 +4155,8 @@ async function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
 
 // ── Render image object to DOM
 function renderImageObj(obj) {
+  bindBoardDom();
+  if (!canvasWorld) return null;
   const hydrated = hydrateImageObject(obj);
   const el = document.createElement('div');
   el.className = 'image-obj';
@@ -6946,6 +6986,8 @@ function nextZIndex() { return ++_zCounter; }
 
 // ── Render a sticky DOM element from an object
 function renderStickyFromObj(obj) {
+  bindBoardDom();
+  if (!canvasWorld) return null;
   const colorName = normalizeStickyColorName(obj.color);
   if (obj.color !== colorName) obj.color = colorName;
   const el = document.createElement('div');
@@ -7306,11 +7348,23 @@ window.__LPA_BOARD_VANILLA_LOADED__ = true;
 
 let boardBooted = false;
 
+window.__LPA_BOARD_RELOAD_STATE__ = function reloadBoardStateFromServer() {
+  bindBoardDom();
+  bindUiDom();
+  loadFromStorage();
+  applyAccessModeUi();
+  updateGridToggleUi();
+  initRealtimeBoardSync();
+  initRealtimePresence();
+  pullLatestBoardStateFromSupabase();
+};
+
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
   restoreCanvasIfDomWasCleared();
   applyTransform();
+  if (state.objects.length) scheduleBoardRedraw();
   applyAccessModeUi();
   updateGridToggleUi();
   initRealtimeBoardSync();

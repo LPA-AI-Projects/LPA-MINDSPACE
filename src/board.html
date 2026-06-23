@@ -32,9 +32,7 @@
 </div>
 
 <!-- SELECTION AI PROMPT -->
-<div id="sel-ai-popup" style="position:fixed;display:none;z-index:500;background:#141414;
-  border:1px solid rgba(46,157,145,0.5);border-radius:12px;padding:10px;
-  box-shadow:0 8px 32px rgba(0,0,0,0.5);min-width:300px;">
+<div id="sel-ai-popup">
   <div style="font-size:11px;color:rgba(251,251,251,0.4);font-family:'JetBrains Mono',monospace;
     margin-bottom:8px;letter-spacing:0.5px;">✦ MODIFY SELECTION WITH AI</div>
   <div style="display:flex;gap:6px;">
@@ -56,6 +54,8 @@
 
 <!-- SHAPE STYLE TOOLBAR (appears on selection) -->
 <div id="shape-toolbar">
+  <button class="stb-btn" style="color:#2e9d91;font-weight:600;" onclick="showSelectionAiPrompt()" title="Ask AI about selection">✦ Ask AI</button>
+  <div class="stb-sep"></div>
   <span class="stb-label">FILL</span>
   <div id="stb-fills"></div>
   <div class="stb-sep"></div>
@@ -73,6 +73,8 @@
 
 <!-- IMAGE TOOLBAR -->
 <div id="image-toolbar">
+  <button class="itb-btn" style="color:#2e9d91;font-weight:600;" onclick="showSelectionAiPrompt()" title="Ask AI about selection">✦ Ask AI</button>
+  <div class="itb-sep"></div>
   <span class="itb-size-label" id="itb-size">0 × 0</span>
   <div class="itb-sep"></div>
   <button class="itb-btn" onclick="fitSelectedImage()">
@@ -100,6 +102,8 @@
   <div class="ttb-sep"></div>
   <!-- Colors -->
   <div id="ttb-colors" style="display:flex;gap:3px;align-items:center;"></div>
+  <div class="ttb-sep"></div>
+  <button class="ttb-btn" style="color:#2e9d91;font-weight:600;" onclick="showSelectionAiPrompt()" title="Ask AI about selection">✦ Ask AI</button>
   <div class="ttb-sep"></div>
   <!-- Delete -->
   <button class="ttb-btn" style="color:#f2541d;" onclick="deleteSelectedTextNode()" title="Delete">

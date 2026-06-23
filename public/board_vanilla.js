@@ -213,6 +213,107 @@ function updateZoomLabel() {
   zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
 }
 
+// ── Floating panel placement (avoid topbar, AI bar, and other toolbars)
+const FLOAT_UI_MARGIN = 8;
+const FLOAT_UI_GAP = 10;
+const TOPBAR_CLEARANCE = 58;
+
+function isFloatingPanelVisible(el, id) {
+  if (!el) return false;
+  if (id === 'sel-ai-popup') return el.style.display === 'block';
+  if (id === 'sel-toolbar') return el.classList.contains('visible');
+  if (['shape-toolbar', 'text-toolbar', 'image-toolbar'].includes(id)) {
+    return el.classList.contains('visible');
+  }
+  return true;
+}
+
+function getFloatingUiObstacleRects(excludeIds = []) {
+  const rects = [];
+  const topbar = document.getElementById('topbar');
+  if (topbar) rects.push(topbar.getBoundingClientRect());
+
+  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'sel-ai-popup'].forEach((id) => {
+    if (excludeIds.includes(id)) return;
+    const el = document.getElementById(id);
+    if (!el || !isFloatingPanelVisible(el, id)) return;
+    rects.push(el.getBoundingClientRect());
+  });
+  return rects;
+}
+
+function floatingRectsOverlap(a, b, pad = 8) {
+  return a.left - pad < b.right + pad
+    && a.right + pad > b.left - pad
+    && a.top - pad < b.bottom + pad
+    && a.bottom + pad > b.top - pad;
+}
+
+function clampFloatingPanelPos(top, left, width, height) {
+  return {
+    top: Math.max(TOPBAR_CLEARANCE, Math.min(top, window.innerHeight - height - FLOAT_UI_MARGIN)),
+    left: Math.max(FLOAT_UI_MARGIN, Math.min(left, window.innerWidth - width - FLOAT_UI_MARGIN)),
+  };
+}
+
+function positionFloatingPanel(el, { anchorRect, excludeIds = [] }) {
+  if (!el || !anchorRect) return;
+  const width = el.offsetWidth || 200;
+  const height = el.offsetHeight || 40;
+  const centerLeft = anchorRect.left + anchorRect.width / 2 - width / 2;
+  const candidates = [
+    { top: anchorRect.bottom + FLOAT_UI_GAP, left: centerLeft },
+    { top: anchorRect.top - height - FLOAT_UI_GAP, left: centerLeft },
+    { top: anchorRect.bottom + FLOAT_UI_GAP, left: anchorRect.left },
+    { top: anchorRect.top - height - FLOAT_UI_GAP, left: anchorRect.right - width },
+  ];
+  const obstacles = getFloatingUiObstacleRects(excludeIds);
+
+  for (const candidate of candidates) {
+    const pos = clampFloatingPanelPos(candidate.top, candidate.left, width, height);
+    const rect = {
+      top: pos.top,
+      left: pos.left,
+      right: pos.left + width,
+      bottom: pos.top + height,
+    };
+    if (!obstacles.some((o) => floatingRectsOverlap(rect, o))) {
+      el.style.top = `${Math.round(pos.top)}px`;
+      el.style.left = `${Math.round(pos.left)}px`;
+      return;
+    }
+  }
+
+  const fallback = clampFloatingPanelPos(anchorRect.bottom + FLOAT_UI_GAP, centerLeft, width, height);
+  el.style.top = `${Math.round(fallback.top)}px`;
+  el.style.left = `${Math.round(fallback.left)}px`;
+}
+
+function getActiveSelectionToolbarEl() {
+  for (const id of ['text-toolbar', 'shape-toolbar', 'image-toolbar', 'sel-toolbar']) {
+    const el = document.getElementById(id);
+    if (!el || !isFloatingPanelVisible(el, id)) continue;
+    return el;
+  }
+  return null;
+}
+
+function shouldHideSelToolbarForTypeToolbar() {
+  if (selectedIds.size !== 1) return false;
+  const obj = state.objects.find((o) => o.id === [...selectedIds][0]);
+  return !!obj && ['text', 'shape', 'image'].includes(obj.type);
+}
+
+function repositionSelectionAiPopup() {
+  const popup = document.getElementById('sel-ai-popup');
+  const anchorEl = getActiveSelectionToolbarEl();
+  if (!popup || popup.style.display !== 'block' || !anchorEl) return;
+  positionFloatingPanel(popup, {
+    anchorRect: anchorEl.getBoundingClientRect(),
+    excludeIds: ['sel-ai-popup'],
+  });
+}
+
 // ═══════════════════════════════════════════════════
 // ZOOM
 // ═══════════════════════════════════════════════════
@@ -2648,27 +2749,35 @@ function deselectAll() { clearAllSelections(); }
 
 // ─── Show/hide toolbar
 function updateSelToolbar() {
-  if (selectedIds.size === 0) { hideSelToolbar(); return; }
+  if (selectedIds.size === 0 || shouldHideSelToolbarForTypeToolbar()) {
+    hideSelToolbar();
+    return;
+  }
   selToolbar.classList.add('visible');
   positionSelToolbar();
 }
 
-function positionSelToolbar() {
-  if (selectedIds.size === 0) return;
-  let minTop = Infinity, centerX = window.innerWidth / 2;
-  selectedIds.forEach(id => {
-    const obj = state.objects.find(o => o.id === id);
+function getSelectionAnchorRect() {
+  let minTop = Infinity;
+  let maxBottom = -Infinity;
+  let minLeft = Infinity;
+  let maxRight = -Infinity;
+
+  selectedIds.forEach((id) => {
+    const obj = state.objects.find((o) => o.id === id);
     if (!obj) return;
     let r;
     if (obj.type === 'stroke') {
-      // compute bounding box from points
       const el = document.querySelector(`path[data-obj-id="${id}"]`);
       if (el) {
-        try { r = el.getBBox(); // SVG bbox in world coords
-          const tl = worldToScreen(r.x, r.y);
-          const br = worldToScreen(r.x + r.width, r.y + r.height);
-          r = { top: tl.y, left: tl.x, width: br.x - tl.x, height: br.y - tl.y };
-        } catch(e) { return; }
+        try {
+          const bbox = el.getBBox();
+          const tl = worldToScreen(bbox.x, bbox.y);
+          const br = worldToScreen(bbox.x + bbox.width, bbox.y + bbox.height);
+          r = { top: tl.y, left: tl.x, right: br.x, bottom: br.y, width: br.x - tl.x, height: br.y - tl.y };
+        } catch (e) {
+          return;
+        }
       }
     } else {
       const el = document.querySelector(`[data-obj-id="${id}"]`);
@@ -2676,18 +2785,39 @@ function positionSelToolbar() {
       r = el.getBoundingClientRect();
     }
     if (!r) return;
-    if (r.top < minTop) { minTop = r.top; centerX = r.left + r.width / 2; }
+    minTop = Math.min(minTop, r.top);
+    maxBottom = Math.max(maxBottom, r.bottom);
+    minLeft = Math.min(minLeft, r.left);
+    maxRight = Math.max(maxRight, r.right);
   });
-  let top = minTop - 46;
-  if (top < 60) top = minTop + 8;
-  const tw = selToolbar.offsetWidth || 160;
-  let left = centerX - tw / 2;
-  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
-  selToolbar.style.top  = Math.round(top)  + 'px';
-  selToolbar.style.left = Math.round(left) + 'px';
+
+  if (!isFinite(minTop)) return null;
+  return {
+    top: minTop,
+    left: minLeft,
+    right: maxRight,
+    bottom: maxBottom,
+    width: maxRight - minLeft,
+    height: maxBottom - minTop,
+  };
 }
 
-function hideSelToolbar() { selToolbar.classList.remove('visible'); }
+function positionSelToolbar() {
+  if (selectedIds.size === 0 || !selToolbar.classList.contains('visible')) return;
+  const anchorRect = getSelectionAnchorRect();
+  if (!anchorRect) return;
+  positionFloatingPanel(selToolbar, {
+    anchorRect,
+    excludeIds: ['sel-toolbar'],
+  });
+  repositionSelectionAiPopup();
+}
+
+function hideSelToolbar() {
+  selToolbar.classList.remove('visible');
+  const popup = document.getElementById('sel-ai-popup');
+  if (popup) popup.style.display = 'none';
+}
 function showSelToolbar()  { if (selectedIds.size > 0) selToolbar.classList.add('visible'); }
 
 // ─── Main mousedown handler for select tool
@@ -2906,7 +3036,17 @@ function applyBoxSelect(bx, by, bw, bh) {
     if (inBox) { selectedIds.add(obj.id); hit = true; }
   });
 
-  if (hit) updateSelToolbar();
+  if (hit) {
+    updateSelToolbar();
+    if (selectedIds.size === 1) {
+      const id = [...selectedIds][0];
+      const obj = state.objects.find((o) => o.id === id);
+      const el = document.querySelector(`[data-obj-id="${id}"]`);
+      if (obj?.type === 'shape' && el) showShapeToolbar(el);
+      else if (obj?.type === 'text' && el) showTextToolbar(el);
+      else if (obj?.type === 'image' && el) showImageToolbar(el);
+    }
+  }
 }
 
 // ─── Delete all selected
@@ -3628,24 +3768,15 @@ function selectShapeObj(id, el, addMode) {
 function showShapeToolbar(el) {
   const tb = document.getElementById('shape-toolbar');
   if (!tb) return;
+  hideSelToolbar();
   tb.classList.add('visible');
 
-  // use requestAnimationFrame so tb.offsetWidth is correct after display:flex
   requestAnimationFrame(() => {
-    const r   = el.getBoundingClientRect();
-    const tbW = tb.offsetWidth  || 260;
-    const tbH = tb.offsetHeight || 44;
-
-    // prefer below the shape, fall back to above if not enough room
-    let top = r.bottom + 10;
-    if (top + tbH > window.innerHeight - 8) top = r.top - tbH - 10;
-    if (top < 60) top = r.bottom + 10; // last resort: just go below
-
-    let left = r.left + r.width / 2 - tbW / 2;
-    left = Math.max(8, Math.min(left, window.innerWidth - tbW - 8));
-
-    tb.style.top  = Math.round(top)  + 'px';
-    tb.style.left = Math.round(left) + 'px';
+    positionFloatingPanel(tb, {
+      anchorRect: el.getBoundingClientRect(),
+      excludeIds: ['shape-toolbar'],
+    });
+    repositionSelectionAiPopup();
   });
 }
 
@@ -4022,18 +4153,15 @@ function selectImageObj(id, addMode) {
 function showImageToolbar(el) {
   const tb = document.getElementById('image-toolbar');
   if (!tb) return;
+  hideSelToolbar();
   tb.classList.add('visible');
   updateImageSizeLabel();
   requestAnimationFrame(() => {
-    const r   = el.getBoundingClientRect();
-    const tbW = tb.offsetWidth || 260;
-    const tbH = tb.offsetHeight || 44;
-    let top  = r.bottom + 10;
-    if (top + tbH > window.innerHeight - 8) top = r.top - tbH - 10;
-    let left = r.left + r.width / 2 - tbW / 2;
-    left = Math.max(8, Math.min(left, window.innerWidth - tbW - 8));
-    tb.style.top  = Math.round(top)  + 'px';
-    tb.style.left = Math.round(left) + 'px';
+    positionFloatingPanel(tb, {
+      anchorRect: el.getBoundingClientRect(),
+      excludeIds: ['image-toolbar'],
+    });
+    repositionSelectionAiPopup();
   });
 }
 
@@ -4268,6 +4396,7 @@ function initTextToolbar() {
 function showTextToolbar(el) {
   const tb = document.getElementById('text-toolbar');
   if (!tb) return;
+  hideSelToolbar();
   tb.classList.add('visible');
 
   // sync controls to current obj
@@ -4284,15 +4413,11 @@ function showTextToolbar(el) {
   }
 
   requestAnimationFrame(() => {
-    const r   = el.getBoundingClientRect();
-    const tbW = tb.offsetWidth  || 300;
-    const tbH = tb.offsetHeight || 40;
-    let top  = r.top - tbH - 10;
-    if (top < 60) top = r.bottom + 10;
-    let left = r.left + r.width / 2 - tbW / 2;
-    left = Math.max(8, Math.min(left, window.innerWidth - tbW - 8));
-    tb.style.top  = Math.round(top)  + 'px';
-    tb.style.left = Math.round(left) + 'px';
+    positionFloatingPanel(tb, {
+      anchorRect: el.getBoundingClientRect(),
+      excludeIds: ['text-toolbar'],
+    });
+    repositionSelectionAiPopup();
   });
 }
 
@@ -4549,12 +4674,8 @@ async function drawBoardToCanvas(bounds, pad, scale) {
 
     } else if (obj.type === 'sticky') {
       const x=tx(obj.x), y=ty(obj.y), w=ts(obj.w||220), h=ts(obj.h||180);
-      const bgMap = {
-        teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
-        white:'#fbfbfb', charcoal:'#141414',
-        yellow:'#2e9d91', pink:'#f2541d', red:'#f2541d', purple:'#4f71f2', green:'#2e9d91',
-      };
-      ctx.fillStyle = bgMap[obj.color] || '#2e9d91';
+      const stickyColor = normalizeStickyColorName(obj.color);
+      ctx.fillStyle = STICKY_BG[stickyColor] || STICKY_BG.yellow;
       roundRectPath(ctx, x, y, w, h, ts(12));
       ctx.fill();
       // handle bar
@@ -5033,15 +5154,11 @@ function drawMinimap() {
       mmCtx.stroke();
 
     } else if (obj.type === 'sticky') {
-      const bgMap = {
-        teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
-        white:'#fbfbfb', charcoal:'#141414',
-        yellow:'#2e9d91', pink:'#f2541d', red:'#f2541d', purple:'#4f71f2', green:'#2e9d91',
-      };
+      const stickyColor = normalizeStickyColorName(obj.color);
       const domEl = document.querySelector(`.sticky-note[data-obj-id="${obj.id}"]`);
       const w = domEl ? domEl.offsetWidth  : (obj.w||220);
       const h = domEl ? domEl.offsetHeight : (obj.h||180);
-      mmCtx.fillStyle = bgMap[obj.color] || '#2e9d91';
+      mmCtx.fillStyle = STICKY_BG[stickyColor] || STICKY_BG.yellow;
       mmRoundRect(mmCtx, wx(obj.x), wy(obj.y), ws(w), ws(h), 2);
       mmCtx.fill();
 
@@ -6224,7 +6341,7 @@ async function renderAiObjects(objects) {
         id, type: 'sticky',
         x: obj.x || 100, y: obj.y || 100,
         w: obj.w || 220, h: obj.h || 180,
-        color: normalizeStickyColorName(obj.color || 'teal'),
+        color: normalizeStickyColorName(obj.color || 'yellow'),
         text: obj.text || '',
         zIndex: nextZIndex(),
       };
@@ -6278,23 +6395,32 @@ async function renderAiObjects(objects) {
 
 function showSelectionAiPrompt() {
   const popup = document.getElementById('sel-ai-popup');
-  const toolbar = document.getElementById('sel-toolbar');
   if (!popup) return;
 
-  // Anchor popup near the selection toolbar when available.
-  if (toolbar) {
-    const rect = toolbar.getBoundingClientRect();
-    popup.style.left = Math.round(rect.left) + 'px';
-    popup.style.top = Math.round(rect.bottom + 10) + 'px';
-  }
   popup.style.display = 'block';
+  requestAnimationFrame(() => {
+    const anchorEl = getActiveSelectionToolbarEl();
+    const anchorRect = anchorEl
+      ? anchorEl.getBoundingClientRect()
+      : getSelectionAnchorRect();
+    if (anchorRect) {
+      positionFloatingPanel(popup, {
+        anchorRect,
+        excludeIds: ['sel-ai-popup'],
+      });
+    }
+  });
 
   setTimeout(() => document.getElementById('sel-ai-input')?.focus(), 50);
 
   // close on outside click
   setTimeout(() => {
     document.addEventListener('mousedown', function closeSelAi(e) {
-      if (!e.target.closest('#sel-ai-popup') && !e.target.closest('#sel-toolbar')) {
+      if (!e.target.closest('#sel-ai-popup')
+        && !e.target.closest('#sel-toolbar')
+        && !e.target.closest('#shape-toolbar')
+        && !e.target.closest('#text-toolbar')
+        && !e.target.closest('#image-toolbar')) {
         document.getElementById('sel-ai-popup').style.display = 'none';
         document.removeEventListener('mousedown', closeSelAi);
       }
@@ -6537,35 +6663,46 @@ init();
 // ═══════════════════════════════════════════════════
 
 const STICKY_COLORS = [
-  { name:'teal',    cls:'sn-teal'    },
+  { name:'yellow',  cls:'sn-yellow'  },
   { name:'orange',  cls:'sn-orange'  },
+  { name:'pink',    cls:'sn-pink'    },
+  { name:'red',     cls:'sn-red'     },
+  { name:'teal',    cls:'sn-teal'    },
   { name:'blue',    cls:'sn-blue'    },
+  { name:'purple',  cls:'sn-purple'  },
+  { name:'green',   cls:'sn-green'   },
   { name:'white',   cls:'sn-white'   },
   { name:'charcoal',cls:'sn-charcoal'},
 ];
 
 const STICKY_BG = {
-  teal:'#2e9d91', orange:'#f2541d', blue:'#4f71f2',
-  white:'#fbfbfb', charcoal:'#141414'
+  yellow:'#FFF176', orange:'#FFCC80', pink:'#F48FB1', red:'#EF9A9A',
+  teal:'#80DEEA', blue:'#90CAF9', purple:'#CE93D8', green:'#A5D6A7',
+  white:'#FAFAFA', charcoal:'#424242',
 };
 
 /** Map AI / saved values to a palette name so CSS classes (.sn-*) match. */
 function normalizeStickyColorName(raw) {
-  if (raw == null || raw === '') return 'teal';
+  if (raw == null || raw === '') return 'yellow';
   const s = String(raw).trim();
   const lower = s.toLowerCase();
-  const legacyMap = {
-    yellow: 'teal', pink: 'orange', red: 'orange', purple: 'blue', green: 'teal',
-  };
-  if (legacyMap[lower]) return legacyMap[lower];
   if (STICKY_COLORS.some((c) => c.name === lower)) return lower;
   const hex = lower.startsWith('#') ? lower : `#${lower}`;
   const found = STICKY_COLORS.find((c) => (STICKY_BG[c.name] || '').toLowerCase() === hex);
   if (found) return found.name;
-  return 'teal';
+  // Boards saved during brand-palette era (hex values)
+  const brandHexMap = {
+    '#2e9d91': 'green',
+    '#f2541d': 'orange',
+    '#4f71f2': 'blue',
+    '#fbfbfb': 'white',
+    '#141414': 'charcoal',
+  };
+  if (brandHexMap[hex]) return brandHexMap[hex];
+  return 'yellow';
 }
 
-let stickyLastColor = 'teal';
+let stickyLastColor = 'yellow';
 let selectedStickyId = null;
 let stickyPickerTargetId = null;
 
@@ -6636,7 +6773,7 @@ function renderStickyFromObj(obj) {
   const colorName = normalizeStickyColorName(obj.color);
   if (obj.color !== colorName) obj.color = colorName;
   const el = document.createElement('div');
-  el.className = `sticky-note ${STICKY_COLORS.find((c) => c.name === colorName)?.cls || 'sn-teal'}`;
+  el.className = `sticky-note ${STICKY_COLORS.find((c) => c.name === colorName)?.cls || 'sn-yellow'}`;
   el.dataset.objId = obj.id;
   el.style.cssText = `
     left:${obj.x}px; top:${obj.y}px;

@@ -32,27 +32,83 @@ let canvasRoot = null;
 let canvasWorld = null;
 
 function bindBoardDom() {
-  canvasRoot = document.getElementById('canvas-root');
-  canvasWorld = document.getElementById('canvas-world');
-  return !!(canvasRoot && canvasWorld);
+  const root = document.getElementById('canvas-root');
+  const world = document.getElementById('canvas-world');
+  canvasRoot = root;
+  canvasWorld = world;
+  return !!(root && world && root.isConnected);
 }
 
 function isEventOnCanvas(e) {
-  if (!canvasRoot) bindBoardDom();
-  if (!canvasRoot) return false;
+  if (!bindBoardDom()) return false;
   const t = e.target;
-  return t === canvasRoot || canvasRoot.contains(t);
+  if (t === canvasRoot || canvasRoot.contains(t)) return true;
+  const hit = document.elementFromPoint(e.clientX, e.clientY);
+  return !!(hit && (hit === canvasRoot || canvasRoot.contains(hit)));
+}
+
+let zoomLabel = null;
+let sbX = null;
+let sbY = null;
+let sbTool = null;
+let sbObjects = null;
+let ctxHint = null;
+let eraserCursor = null;
+let selRect = null;
+
+function bindUiDom() {
+  zoomLabel = document.getElementById('zoomLabel');
+  sbX = document.getElementById('sb-x');
+  sbY = document.getElementById('sb-y');
+  sbTool = document.getElementById('sb-tool');
+  sbObjects = document.getElementById('sb-objects');
+  ctxHint = document.getElementById('ctx-hint');
+  eraserCursor = document.getElementById('eraser-cursor');
+  selRect = document.getElementById('sel-rect');
+}
+
+let canvasInputAbort = null;
+let lastPinchDist = null;
+
+function bindCanvasInputListeners() {
+  if (!bindBoardDom()) return;
+  canvasInputAbort?.abort();
+  canvasInputAbort = new AbortController();
+  const signal = canvasInputAbort.signal;
+
+  canvasRoot.addEventListener('mousedown', handleCanvasPointerDown, { signal });
+  canvasRoot.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    handleCanvasPointerDown(e);
+  }, { signal });
+  canvasRoot.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showContextMenu(e);
+  }, { signal });
+  canvasRoot.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
+    zoomTo(state.zoom * factor, e.clientX, e.clientY);
+  }, { signal, passive: false });
+  canvasRoot.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (lastPinchDist) {
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        zoomTo(state.zoom * dist / lastPinchDist, cx, cy);
+      }
+      lastPinchDist = dist;
+    }
+  }, { signal, passive: false });
+  canvasRoot.addEventListener('touchend', () => { lastPinchDist = null; }, { signal });
 }
 
 bindBoardDom();
-const zoomLabel = document.getElementById('zoomLabel');
-const sbX = document.getElementById('sb-x');
-const sbY = document.getElementById('sb-y');
-const sbTool = document.getElementById('sb-tool');
-const sbObjects = document.getElementById('sb-objects');
-const ctxHint = document.getElementById('ctx-hint');
-const eraserCursor = document.getElementById('eraser-cursor');
-const selRect = document.getElementById('sel-rect');
+bindUiDom();
 const boardAccess = window.boardAccess || {};
 let realtimeClientId = `${boardAccess.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
 let presenceChannel = null;
@@ -228,7 +284,7 @@ function updateGrid() {
 }
 
 function updateZoomLabel() {
-  zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+  if (zoomLabel) zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
 }
 
 // ── Floating panel placement (avoid topbar, AI bar, and other toolbars)
@@ -506,13 +562,14 @@ function setTool(tool) {
   document.body.className = 'tool-' + tool;
 
   // update status bar
-  sbTool.textContent = tool;
+  if (sbTool) sbTool.textContent = tool;
 
   // context hint
   showHint(TOOL_HINTS[tool] || '');
 }
 
 function showHint(msg) {
+  if (!ctxHint) return;
   ctxHint.textContent = msg;
   ctxHint.classList.add('show');
   clearTimeout(ctxHint._timer);
@@ -523,7 +580,6 @@ function showHint(msg) {
 // CANVAS MOUSE EVENTS
 // ═══════════════════════════════════════════════════
 function handleCanvasPointerDown(e) {
-  if (!isEventOnCanvas(e)) return;
   if (e.button !== 0) return;
   if (typeof e.isPrimary === 'boolean' && !e.isPrimary) return;
   e.preventDefault();
@@ -572,12 +628,6 @@ function handleCanvasPointerDown(e) {
   }
 }
 
-document.addEventListener('mousedown', handleCanvasPointerDown);
-document.addEventListener('pointerdown', (e) => {
-  if (e.pointerType === 'mouse') return;
-  handleCanvasPointerDown(e);
-});
-
 function updateEraserCursor(clientX, clientY) {
   if (!eraserCursor) return;
   eraserCursor.style.transform = `translate3d(${clientX}px, ${clientY}px, 0) translate(-50%, -50%)`;
@@ -590,8 +640,8 @@ document.addEventListener('mousemove', e => {
   const wp = screenToWorld(e.clientX, e.clientY);
   state.mouseX = Math.round(wp.x);
   state.mouseY = Math.round(wp.y);
-  sbX.textContent = state.mouseX;
-  sbY.textContent = state.mouseY;
+  if (sbX) sbX.textContent = state.mouseX;
+  if (sbY) sbY.textContent = state.mouseY;
 
   if (state.isPanning) { doPan(e); return; }
   if (state.isDrawing) { continueStroke(e); return; }
@@ -621,41 +671,6 @@ document.addEventListener('pointerup', (e) => {
   if (state.isErasing) { endErase(e); return; }
   if (state.isShaping) { endShapeDraw(e); return; }
 });
-
-// ═══════════════════════════════════════════════════
-// SCROLL TO ZOOM
-// ═══════════════════════════════════════════════════
-document.addEventListener('contextmenu', e => {
-  if (!isEventOnCanvas(e)) return;
-  e.preventDefault();
-  showContextMenu(e);
-});
-
-document.addEventListener('wheel', e => {
-  if (!isEventOnCanvas(e)) return;
-  e.preventDefault();
-  const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
-  zoomTo(state.zoom * factor, e.clientX, e.clientY);
-}, { passive: false });
-
-// pinch zoom (trackpad)
-let lastPinchDist = null;
-document.addEventListener('touchmove', e => {
-  if (!isEventOnCanvas(e)) return;
-  if (e.touches.length === 2) {
-    e.preventDefault();
-    const dx = e.touches[0].clientX - e.touches[1].clientX;
-    const dy = e.touches[0].clientY - e.touches[1].clientY;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-    if (lastPinchDist) {
-      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      zoomTo(state.zoom * dist / lastPinchDist, cx, cy);
-    }
-    lastPinchDist = dist;
-  }
-}, { passive: false });
-document.addEventListener('touchend', () => { lastPinchDist = null; });
 
 // ═══════════════════════════════════════════════════
 // PEN STATE (must be before stroke drawing — used by startStroke)
@@ -1456,7 +1471,7 @@ function saveBoardName(val) {
 }
 
 function updateObjectCount() {
-  sbObjects.textContent = state.objects.length;
+  if (sbObjects) sbObjects.textContent = state.objects.length;
 }
 
 function uid() {
@@ -6809,8 +6824,6 @@ whenDomReady(() => {
   applyBoardBg();
 });
 
-init();
-
 // ═══════════════════════════════════════════════════
 // STICKY NOTES — STEP 2
 // ═══════════════════════════════════════════════════
@@ -7282,6 +7295,8 @@ scheduleInitStickyColorPicker();
 window.__LPA_BOARD_VANILLA_LOADED__ = true;
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
+  bindUiDom();
+  bindCanvasInputListeners();
   restoreCanvasIfDomWasCleared();
   applyTransform();
   applyAccessModeUi();
@@ -7292,4 +7307,21 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   pullLatestBoardStateFromSupabase();
   if (activityPanelOpen) renderActivityPanel();
 };
+
+function bootBoard() {
+  bindBoardDom();
+  bindUiDom();
+  bindCanvasInputListeners();
+  init();
+}
+
+function tryBootBoard() {
+  if (bindBoardDom()) {
+    bootBoard();
+  } else {
+    requestAnimationFrame(tryBootBoard);
+  }
+}
+
+tryBootBoard();
 

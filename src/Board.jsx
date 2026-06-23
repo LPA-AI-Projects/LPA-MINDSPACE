@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
 import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
@@ -169,6 +169,7 @@ async function loadSessionScopedBoardWithRetry(sessionId, userId, attempts = 4) 
 
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
+  const [shellReady, setShellReady] = useState(false);
   const [loadError, setLoadError] = useState('');
   const boardMountRef = useRef(null);
   const hasLoadedOnceRef = useRef(false);
@@ -334,19 +335,20 @@ export default function Board({ session }) {
     return () => window.removeEventListener('storage', onStorage);
   }, [boardLoaded]);
 
-  // Mount shell HTML before loading board_vanilla.js (script expects #canvas-root in DOM).
-  useEffect(() => {
+  // Inject board HTML synchronously before paint so canvas exists before board_vanilla boots.
+  useLayoutEffect(() => {
     if (!boardLoaded || !boardMountRef.current) return;
-    if (boardMountRef.current.querySelector('#canvas-world')) return;
-    boardMountRef.current.innerHTML = boardHtml;
-    window.__LPA_BOARD_REINIT__?.();
+    if (!boardMountRef.current.querySelector('#canvas-world')) {
+      boardMountRef.current.innerHTML = boardHtml;
+    }
+    setShellReady(true);
   }, [boardLoaded]);
 
   useEffect(() => {
-    if (!boardLoaded) return;
+    if (!shellReady) return;
 
     if (window.__LPA_BOARD_VANILLA_LOADED__) {
-      window.__LPA_BOARD_REINIT__?.();
+      window.__LPA_BOARD_BOOT__?.();
       return undefined;
     }
     if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
@@ -355,10 +357,13 @@ export default function Board({ session }) {
     script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
+    script.onload = () => {
+      window.__LPA_BOARD_BOOT__?.();
+    };
     document.body.appendChild(script);
 
     return undefined;
-  }, [boardLoaded]);
+  }, [shellReady]);
 
   if (loadError) {
     return (

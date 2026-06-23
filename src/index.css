@@ -40,6 +40,11 @@ html,body{width:100%;height:100%;overflow:hidden}
   --shadow-panel:0 20px 60px rgba(20,20,20,0.55);
   --shadow-tooltip:0 8px 24px rgba(20,20,20,0.4);
   --ease-out:cubic-bezier(0.22,1,0.36,1);
+
+  /* left toolbar geometry — secondary panels sit to its right */
+  --left-toolbar-left:18px;
+  --left-toolbar-width:56px; /* 8px pad + 40px btn + 8px pad */
+  --tool-panel-left:calc(var(--left-toolbar-left) + var(--left-toolbar-width) + 14px);
 }
 
 /* ── BODY ── */
@@ -1417,7 +1422,7 @@ body.tool-eraser #eraser-cursor{display:block}
   gap: 4px;
   z-index: 400;
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  left: 64px;
+  left: var(--tool-panel-left);
   top: 50%;
   transform: translateY(-50%);
 }
@@ -1891,19 +1896,20 @@ body.tool-eraser #eraser-cursor{display:block}
 ══════════════════════════════════════ */
 #pen-toolbar {
   position: fixed;
-  left: 64px;
+  left: var(--tool-panel-left);
   top: 50%;
   transform: translateY(-50%);
   background: #141414;
   border: 1px solid rgba(255,255,255,0.16);
   border-radius: 14px;
-  padding: 8px 6px;
+  padding: 10px 8px;
   display: none;
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  z-index: 100;
+  z-index: 110;
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  min-width: 48px;
 }
 #pen-toolbar.visible { display: flex; }
 
@@ -2196,7 +2202,7 @@ body.tool-eraser #eraser-cursor{display:block}
 ══════════════════════════════════════ */
 #more-menu {
   position: fixed;
-  left: 64px;
+  left: var(--tool-panel-left);
   background: #141414;
   border: 1px solid rgba(255,255,255,0.16);
   border-radius: 14px;

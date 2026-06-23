@@ -67,30 +67,39 @@ function bindUiDom() {
   selRect = document.getElementById('sel-rect');
 }
 
-let canvasInputAbort = null;
 let lastPinchDist = null;
+let canvasEventsReady = false;
 
-function bindCanvasInputListeners() {
-  if (!bindBoardDom()) return;
-  canvasInputAbort?.abort();
-  canvasInputAbort = new AbortController();
-  const signal = canvasInputAbort.signal;
+function ensureCanvasEvents() {
+  if (canvasEventsReady) return;
+  canvasEventsReady = true;
 
-  canvasRoot.addEventListener('mousedown', handleCanvasPointerDown, { signal });
-  canvasRoot.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse') return;
+  document.addEventListener('mousedown', (e) => {
+    if (!isEventOnCanvas(e)) return;
     handleCanvasPointerDown(e);
-  }, { signal });
-  canvasRoot.addEventListener('contextmenu', (e) => {
+  }, true);
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    if (!isEventOnCanvas(e)) return;
+    handleCanvasPointerDown(e);
+  }, true);
+
+  document.addEventListener('contextmenu', (e) => {
+    if (!isEventOnCanvas(e)) return;
     e.preventDefault();
     showContextMenu(e);
-  }, { signal });
-  canvasRoot.addEventListener('wheel', (e) => {
+  }, true);
+
+  document.addEventListener('wheel', (e) => {
+    if (!isEventOnCanvas(e)) return;
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
     zoomTo(state.zoom * factor, e.clientX, e.clientY);
-  }, { signal, passive: false });
-  canvasRoot.addEventListener('touchmove', (e) => {
+  }, { capture: true, passive: false });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!isEventOnCanvas(e)) return;
     if (e.touches.length === 2) {
       e.preventDefault();
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -103,8 +112,9 @@ function bindCanvasInputListeners() {
       }
       lastPinchDist = dist;
     }
-  }, { signal, passive: false });
-  canvasRoot.addEventListener('touchend', () => { lastPinchDist = null; }, { signal });
+  }, { capture: true, passive: false });
+
+  document.addEventListener('touchend', () => { lastPinchDist = null; }, true);
 }
 
 bindBoardDom();
@@ -602,8 +612,8 @@ function handleCanvasPointerDown(e) {
   }
 
   if (tool === 'text') {
-    // don't create new text if clicking an existing text element
-    if (e.target.classList.contains('canvas-text') || e.target.closest('.canvas-text')) return;
+    const el = e.target instanceof Element ? e.target : null;
+    if (el?.closest('.canvas-text')) return;
     placeText(e);
     return;
   }
@@ -7293,10 +7303,12 @@ function scheduleInitStickyColorPicker() {
 scheduleInitStickyColorPicker();
 
 window.__LPA_BOARD_VANILLA_LOADED__ = true;
+
+let boardBooted = false;
+
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
-  bindCanvasInputListeners();
   restoreCanvasIfDomWasCleared();
   applyTransform();
   applyAccessModeUi();
@@ -7308,20 +7320,15 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   if (activityPanelOpen) renderActivityPanel();
 };
 
-function bootBoard() {
+window.__LPA_BOARD_BOOT__ = function bootBoard() {
   bindBoardDom();
   bindUiDom();
-  bindCanvasInputListeners();
-  init();
-}
-
-function tryBootBoard() {
-  if (bindBoardDom()) {
-    bootBoard();
-  } else {
-    requestAnimationFrame(tryBootBoard);
+  ensureCanvasEvents();
+  if (!boardBooted) {
+    boardBooted = true;
+    init();
+    return;
   }
-}
-
-tryBootBoard();
+  window.__LPA_BOARD_REINIT__();
+};
 

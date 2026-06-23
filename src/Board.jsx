@@ -169,7 +169,6 @@ async function loadSessionScopedBoardWithRetry(sessionId, userId, attempts = 4) 
 
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
-  const [shellReady, setShellReady] = useState(false);
   const [loadError, setLoadError] = useState('');
   const boardMountRef = useRef(null);
   const hasLoadedOnceRef = useRef(false);
@@ -275,7 +274,8 @@ export default function Board({ session }) {
           }
         }
 
-        window.supabaseInitialState = JSON.stringify(boardRecord.state || {});
+        window.__LPA_BOARD_STATE_OBJECT__ = boardRecord.state || {};
+        window.supabaseInitialState = JSON.stringify(window.__LPA_BOARD_STATE_OBJECT__);
       }
 
       window.supabaseClient = supabase;
@@ -344,32 +344,25 @@ export default function Board({ session }) {
     if (!boardMountRef.current.querySelector('#canvas-world')) {
       boardMountRef.current.innerHTML = boardHtml;
     }
-    setShellReady(true);
+    if (window.__LPA_BOARD_VANILLA_LOADED__) {
+      queueMicrotask(() => window.__LPA_BOARD_BOOT__?.());
+    }
   }, [boardLoaded]);
 
   useEffect(() => {
-    if (!boardLoaded) {
-      setShellReady(false);
-      return undefined;
-    }
-    if (!shellReady) return undefined;
-
-    const boot = () => window.__LPA_BOARD_BOOT__?.();
-    if (window.__LPA_BOARD_VANILLA_LOADED__) {
-      boot();
-      return undefined;
-    }
+    if (!boardLoaded) return undefined;
+    if (window.__LPA_BOARD_VANILLA_LOADED__) return undefined;
     if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
 
     const script = document.createElement('script');
     script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
-    script.onload = boot;
+    script.onload = () => window.__LPA_BOARD_BOOT__?.();
     document.body.appendChild(script);
 
     return undefined;
-  }, [boardLoaded, shellReady]);
+  }, [boardLoaded]);
 
   if (loadError) {
     return (

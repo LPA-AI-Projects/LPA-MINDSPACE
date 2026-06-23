@@ -32,11 +32,32 @@ let canvasRoot = null;
 let canvasWorld = null;
 
 function bindBoardDom() {
-  const root = document.getElementById('canvas-root');
-  const world = document.getElementById('canvas-world');
+  const mount = document.querySelector('.board-shell');
+  const root = mount?.querySelector('#canvas-root') || document.getElementById('canvas-root');
+  const world = mount?.querySelector('#canvas-world') || document.getElementById('canvas-world');
   canvasRoot = root;
   canvasWorld = world;
-  return !!(root && world && root.isConnected);
+  return !!(root && world && root.isConnected && world.isConnected);
+}
+
+/** Keep the full-screen canvas on document.body so fixed positioning is reliable. */
+function ensureCanvasMountedOnBody() {
+  if (!bindBoardDom()) return false;
+  document.querySelectorAll('#canvas-root').forEach((node) => {
+    if (node !== canvasRoot) node.remove();
+  });
+  if (canvasRoot.parentElement !== document.body) {
+    document.body.appendChild(canvasRoot);
+  }
+  return bindBoardDom();
+}
+
+function appendToCanvasWorld(el) {
+  if (!el) return null;
+  ensureCanvasMountedOnBody();
+  if (!canvasWorld) return null;
+  canvasWorld.appendChild(el);
+  return el;
 }
 
 function isEventOnCanvas(e) {
@@ -68,29 +89,69 @@ function bindUiDom() {
 }
 
 /** Paint state.objects onto the live canvas; retries until #canvas-world is mounted. */
-function scheduleBoardRedraw(maxAttempts = 90) {
+function scheduleBoardRedraw(maxAttempts = 300) {
+  let finished = false;
   const attempt = (tries = 0) => {
-    if (!bindBoardDom()) {
+    if (finished) return;
+    if (!ensureCanvasMountedOnBody()) {
       if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
+      else console.warn('[board] canvas not ready after retries');
       return;
     }
     try {
       redrawAll();
       updateObjectCount();
+      finished = true;
+      console.info('[board] painted', state.objects.length, 'objects,', canvasWorld?.childElementCount, 'dom nodes');
     } catch (err) {
       console.error('[board] redraw failed', err);
       if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
     }
   };
   attempt();
+  // Fallback for slow mounts / production cold starts
+  setTimeout(() => {
+    if (finished || !state.objects.length) return;
+    if (!ensureCanvasMountedOnBody()) return;
+    try {
+      redrawAll();
+      updateObjectCount();
+      finished = true;
+      console.info('[board] painted (fallback)', state.objects.length, 'objects');
+    } catch (err) {
+      console.error('[board] redraw fallback failed', err);
+    }
+  }, 2500);
+}
+
+function normalizeObjectsList(objects) {
+  if (Array.isArray(objects)) return objects;
+  if (objects && typeof objects === 'object') return Object.values(objects);
+  return [];
+}
+
+function normalizeBoardStateData(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (data.state && typeof data.state === 'object' && !Array.isArray(data.objects)) {
+    const inner = data.state;
+    return {
+      boardName: inner.boardName || data.boardName,
+      panX: inner.panX ?? data.panX,
+      panY: inner.panY ?? data.panY,
+      zoom: inner.zoom ?? data.zoom,
+      objects: inner.objects ?? data.objects,
+      sharing: inner.sharing ?? data.sharing,
+    };
+  }
+  return data;
 }
 
 function parseBoardStateRaw(raw) {
   if (raw == null || raw === '') return null;
-  if (typeof raw === 'object') return raw;
+  if (typeof raw === 'object') return normalizeBoardStateData(raw);
   let data = JSON.parse(raw);
   if (typeof data === 'string') data = JSON.parse(data);
-  return data;
+  return normalizeBoardStateData(data);
 }
 
 let lastPinchDist = null;
@@ -297,6 +358,8 @@ function isBoardAdmin() {
 function applyTransform() {
   bindBoardDom();
   if (!canvasWorld) return;
+  const zoom = Number.isFinite(state.zoom) && state.zoom > 0 ? state.zoom : 1;
+  state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
   canvasWorld.style.transform =
     `translate(${state.panX}px,${state.panY}px) scale(${state.zoom})`;
   updateGrid();
@@ -747,7 +810,7 @@ state.isDrawing = false;
 state.isErasing = false;
 
 function getDrawingSvg() {
-  bindBoardDom();
+  ensureCanvasMountedOnBody();
   if (!canvasWorld) return null;
   let svg = document.getElementById('drawing-layer');
   if (svg && !svg.isConnected) {
@@ -762,7 +825,7 @@ function getDrawingSvg() {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.id = 'drawing-layer';
     svg.style.cssText = 'position:absolute;top:0;left:0;width:200vw;height:200vh;overflow:visible;z-index:5;pointer-events:none;';
-    canvasWorld.appendChild(svg);
+    appendToCanvasWorld(svg);
   }
   return svg;
 }
@@ -1273,7 +1336,7 @@ function redo() {
 }
 
 function redrawAll() {
-  if (!bindBoardDom() || !canvasWorld) return;
+  if (!ensureCanvasMountedOnBody() || !canvasWorld) return;
 
   // 1. clear selections safely
   if (typeof clearAllSelections === 'function') clearAllSelections();
@@ -1465,7 +1528,7 @@ function addTextToCanvas(obj) {
   });
   editable.addEventListener('mousedown', ev => ev.stopPropagation());
 
-  canvasWorld.appendChild(wrap);
+  appendToCanvasWorld(wrap);
   return wrap;
 }
 
@@ -2140,17 +2203,20 @@ function saveToStorage() {
 
 function loadFromStorage() {
   try {
-    const raw = window.supabaseInitialState || localStorage.getItem('lpa-mindspace-v1');
+    const raw =
+      window.__LPA_BOARD_STATE_OBJECT__ ||
+      window.supabaseInitialState ||
+      localStorage.getItem('lpa-mindspace-v1');
     const data = parseBoardStateRaw(raw);
     if (!data) {
       History.baseline();
       return;
     }
     state.boardName = data.boardName || 'LP MindSpace';
-    state.panX = data.panX || 0;
-    state.panY = data.panY || 0;
-    state.zoom = data.zoom || 1;
-    state.objects = hydrateObjectsList(data.objects || []);
+    state.panX = Number.isFinite(data.panX) ? data.panX : 0;
+    state.panY = Number.isFinite(data.panY) ? data.panY : 0;
+    state.zoom = Number.isFinite(data.zoom) && data.zoom > 0 ? data.zoom : 1;
+    state.objects = hydrateObjectsList(normalizeObjectsList(data.objects));
     state.sharing = data.sharing || null;
     const boardNameInput = document.getElementById('boardName');
     if (boardNameInput) boardNameInput.value = state.boardName;
@@ -2158,6 +2224,7 @@ function loadFromStorage() {
     applyTransform();
     scheduleBoardRedraw();
     History.baseline();
+    console.info('[board] loaded', state.objects.length, 'objects');
   } catch (e) {
     console.error('[board] loadFromStorage failed', e);
     History.baseline();
@@ -2311,6 +2378,17 @@ function sanitizeSnapshotForSync(snapshot) {
 
 function applyRemoteBoardState(remoteState, sourceLabel) {
   if (!remoteState || typeof remoteState !== 'object') return;
+  const remoteList = normalizeObjectsList(
+    normalizeBoardStateData(remoteState)?.objects ?? remoteState.objects,
+  );
+  if (
+    sourceLabel === 'latest' &&
+    remoteList.length === 0 &&
+    (state.objects || []).length > 0
+  ) {
+    console.warn('[board] ignoring empty remote snapshot; keeping local objects');
+    return;
+  }
   let currentSerialized = '';
   let remoteSerialized = '';
   try {
@@ -2323,7 +2401,6 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
 
   const previousObjects = state.objects || [];
   const previousById = createObjectMap(previousObjects);
-  const remoteList = Array.isArray(remoteState.objects) ? remoteState.objects : [];
   const mergedRemoteList = remoteList.map((obj) => {
     if (obj?.type !== 'image' || obj.src) return obj;
     const prev = previousById.get(String(obj.id));
@@ -3870,7 +3947,7 @@ function renderShapeObj(obj) {
     }
   });
 
-  canvasWorld.appendChild(el);
+  appendToCanvasWorld(el);
   return el;
 }
 
@@ -4260,7 +4337,7 @@ function renderImageObj(obj) {
     }
   });
 
-  canvasWorld.appendChild(el);
+  appendToCanvasWorld(el);
   return el;
 }
 
@@ -7102,7 +7179,7 @@ function renderStickyFromObj(obj) {
     startStickyResize(ev, el, obj);
   });
 
-  canvasWorld.appendChild(el);
+  appendToCanvasWorld(el);
   return el;
 }
 
@@ -7362,9 +7439,11 @@ window.__LPA_BOARD_RELOAD_STATE__ = function reloadBoardStateFromServer() {
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
+  ensureCanvasMountedOnBody();
+  loadFromStorage();
   restoreCanvasIfDomWasCleared();
   applyTransform();
-  if (state.objects.length) scheduleBoardRedraw();
+  scheduleBoardRedraw();
   applyAccessModeUi();
   updateGridToggleUi();
   initRealtimeBoardSync();
@@ -7378,6 +7457,7 @@ window.__LPA_BOARD_BOOT__ = function bootBoard() {
   bindBoardDom();
   bindUiDom();
   ensureCanvasEvents();
+  ensureCanvasMountedOnBody();
   if (!boardBooted) {
     boardBooted = true;
     init();

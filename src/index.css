@@ -58,6 +58,12 @@ body{
 /* ══════════════════════════════════════
    CANVAS LAYER
 ══════════════════════════════════════ */
+.board-shell{
+  position:relative;
+  min-height:100vh;
+  width:100%;
+}
+
 #canvas-root{
   position:fixed;
   inset:0;

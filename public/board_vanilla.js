@@ -34,28 +34,31 @@ let canvasWorld = null;
 function bindBoardDom() {
   const mount = document.querySelector('.board-shell');
   const root = mount?.querySelector('#canvas-root') || document.getElementById('canvas-root');
-  const world = mount?.querySelector('#canvas-world') || document.getElementById('canvas-world');
+  const world = root?.querySelector('#canvas-world') || mount?.querySelector('#canvas-world') || document.getElementById('canvas-world');
   canvasRoot = root;
   canvasWorld = world;
   return !!(root && world && root.isConnected && world.isConnected);
 }
 
-/** Keep the full-screen canvas on document.body so fixed positioning is reliable. */
-function ensureCanvasMountedOnBody() {
-  if (!bindBoardDom()) return false;
-  document.querySelectorAll('#canvas-root').forEach((node) => {
-    if (node !== canvasRoot) node.remove();
-  });
-  if (canvasRoot.parentElement !== document.body) {
-    document.body.appendChild(canvasRoot);
+/** Resolve the live canvas inside the React-mounted board shell. */
+function ensureCanvasReady() {
+  const mount = document.querySelector('.board-shell');
+  if (mount) {
+    const roots = mount.querySelectorAll('#canvas-root');
+    roots.forEach((node, index) => {
+      if (index > 0) node.remove();
+    });
   }
+  // Clean up legacy reparenting from older builds
+  document.querySelectorAll('body > #canvas-root').forEach((node) => {
+    if (!mount?.contains(node)) node.remove();
+  });
   return bindBoardDom();
 }
 
 function appendToCanvasWorld(el) {
   if (!el) return null;
-  ensureCanvasMountedOnBody();
-  if (!canvasWorld) return null;
+  if (!ensureCanvasReady() || !canvasWorld) return null;
   canvasWorld.appendChild(el);
   return el;
 }
@@ -93,7 +96,7 @@ function scheduleBoardRedraw(maxAttempts = 300) {
   let finished = false;
   const attempt = (tries = 0) => {
     if (finished) return;
-    if (!ensureCanvasMountedOnBody()) {
+    if (!ensureCanvasReady()) {
       if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
       else console.warn('[board] canvas not ready after retries');
       return;
@@ -112,7 +115,7 @@ function scheduleBoardRedraw(maxAttempts = 300) {
   // Fallback for slow mounts / production cold starts
   setTimeout(() => {
     if (finished || !state.objects.length) return;
-    if (!ensureCanvasMountedOnBody()) return;
+    if (!ensureCanvasReady()) return;
     try {
       redrawAll();
       updateObjectCount();
@@ -810,7 +813,7 @@ state.isDrawing = false;
 state.isErasing = false;
 
 function getDrawingSvg() {
-  ensureCanvasMountedOnBody();
+  ensureCanvasReady();
   if (!canvasWorld) return null;
   let svg = document.getElementById('drawing-layer');
   if (svg && !svg.isConnected) {
@@ -1336,7 +1339,7 @@ function redo() {
 }
 
 function redrawAll() {
-  if (!ensureCanvasMountedOnBody() || !canvasWorld) return;
+  if (!ensureCanvasReady() || !canvasWorld) return;
 
   // 1. clear selections safely
   if (typeof clearAllSelections === 'function') clearAllSelections();
@@ -2231,6 +2234,39 @@ function loadFromStorage() {
   }
 }
 
+async function hydrateInitialBoardState() {
+  const access = getLiveBoardAccess();
+  const hasInlineState =
+    window.__LPA_BOARD_STATE_OBJECT__ != null &&
+    normalizeObjectsList(
+      normalizeBoardStateData(
+        typeof window.__LPA_BOARD_STATE_OBJECT__ === 'object'
+          ? window.__LPA_BOARD_STATE_OBJECT__
+          : parseBoardStateRaw(window.__LPA_BOARD_STATE_OBJECT__),
+      )?.objects,
+    ).length > 0;
+
+  if (!hasInlineState && window.supabaseClient && access.boardId) {
+    try {
+      const { data, error } = await window.supabaseClient
+        .from('boards')
+        .select('state')
+        .eq('id', access.boardId)
+        .maybeSingle();
+      if (!error && data?.state != null) {
+        window.__LPA_BOARD_STATE_OBJECT__ = data.state;
+        console.info('[board] fetched state from Supabase for board', access.boardId);
+      } else if (error) {
+        console.error('[board] Supabase state fetch failed', error.message);
+      }
+    } catch (err) {
+      console.error('[board] Supabase state fetch failed', err);
+    }
+  }
+
+  loadFromStorage();
+}
+
 // auto-save every 10s
 setInterval(saveToStorage, 10000);
 window.addEventListener('beforeunload', saveToStorage);
@@ -2238,11 +2274,12 @@ window.addEventListener('beforeunload', saveToStorage);
 // ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
-function init() {
+async function init() {
   const access = getLiveBoardAccess();
   realtimeClientId = `${access.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
+  ensureCanvasReady();
   applyTransform();
-  loadFromStorage();
+  await hydrateInitialBoardState();
   lastPublishedBoardState = getCurrentBoardState();
   applyAccessModeUi();
   updateGridToggleUi();
@@ -7425,10 +7462,10 @@ window.__LPA_BOARD_VANILLA_LOADED__ = true;
 
 let boardBooted = false;
 
-window.__LPA_BOARD_RELOAD_STATE__ = function reloadBoardStateFromServer() {
+window.__LPA_BOARD_RELOAD_STATE__ = async function reloadBoardStateFromServer() {
   bindBoardDom();
   bindUiDom();
-  loadFromStorage();
+  await hydrateInitialBoardState();
   applyAccessModeUi();
   updateGridToggleUi();
   initRealtimeBoardSync();
@@ -7436,11 +7473,11 @@ window.__LPA_BOARD_RELOAD_STATE__ = function reloadBoardStateFromServer() {
   pullLatestBoardStateFromSupabase();
 };
 
-window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
+window.__LPA_BOARD_REINIT__ = async function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
-  ensureCanvasMountedOnBody();
-  loadFromStorage();
+  ensureCanvasReady();
+  await hydrateInitialBoardState();
   restoreCanvasIfDomWasCleared();
   applyTransform();
   scheduleBoardRedraw();
@@ -7453,16 +7490,34 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   if (activityPanelOpen) renderActivityPanel();
 };
 
-window.__LPA_BOARD_BOOT__ = function bootBoard() {
+window.__LPA_BOARD_ATTEMPT_BOOT__ = function attemptBoardBoot() {
+  if (!window.__LPA_BOARD_SHELL_MOUNTED__) return;
+  if (!document.querySelector('.board-shell #canvas-world')) return;
+  window.__LPA_BOARD_BOOT__?.();
+};
+
+window.__LPA_BOARD_BOOT__ = async function bootBoard() {
   bindBoardDom();
   bindUiDom();
   ensureCanvasEvents();
-  ensureCanvasMountedOnBody();
+  ensureCanvasReady();
   if (!boardBooted) {
     boardBooted = true;
-    init();
+    await init();
     return;
   }
-  window.__LPA_BOARD_REINIT__();
+  await window.__LPA_BOARD_REINIT__();
 };
+
+window.__LPA_BOARD_DEBUG__ = () => ({
+  boardId: getLiveBoardAccess().boardId,
+  objectCount: state.objects.length,
+  domChildCount: canvasWorld?.childElementCount ?? 0,
+  canvasConnected: !!(canvasRoot?.isConnected && canvasWorld?.isConnected),
+  zoom: state.zoom,
+  panX: state.panX,
+  panY: state.panY,
+});
+
+window.__LPA_BOARD_ATTEMPT_BOOT__();
 

@@ -5,6 +5,18 @@ import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
 
 const EDIT_ROLES = new Set(['facilitator', 'participant']);
 
+function normalizeBoardState(state) {
+  if (!state) return {};
+  if (typeof state === 'string') {
+    try {
+      return JSON.parse(state);
+    } catch {
+      return {};
+    }
+  }
+  return state;
+}
+
 function getDisplayName(user) {
   if (!user) return 'Guest';
   const fromMeta = user.user_metadata?.full_name || user.user_metadata?.name;
@@ -274,7 +286,7 @@ export default function Board({ session }) {
           }
         }
 
-        window.__LPA_BOARD_STATE_OBJECT__ = boardRecord.state || {};
+        window.__LPA_BOARD_STATE_OBJECT__ = normalizeBoardState(boardRecord.state);
         window.supabaseInitialState = JSON.stringify(window.__LPA_BOARD_STATE_OBJECT__);
       }
 
@@ -344,13 +356,15 @@ export default function Board({ session }) {
     if (!boardMountRef.current.querySelector('#canvas-world')) {
       boardMountRef.current.innerHTML = boardHtml;
     }
-    if (window.__LPA_BOARD_VANILLA_LOADED__) {
-      queueMicrotask(() => window.__LPA_BOARD_BOOT__?.());
-    }
+    window.__LPA_BOARD_SHELL_MOUNTED__ = true;
+    window.__LPA_BOARD_ATTEMPT_BOOT__?.();
   }, [boardLoaded]);
 
   useEffect(() => {
-    if (!boardLoaded) return undefined;
+    if (!boardLoaded) {
+      window.__LPA_BOARD_SHELL_MOUNTED__ = false;
+      return undefined;
+    }
     if (window.__LPA_BOARD_VANILLA_LOADED__) return undefined;
     if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
 
@@ -358,7 +372,7 @@ export default function Board({ session }) {
     script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
     script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
-    script.onload = () => window.__LPA_BOARD_BOOT__?.();
+    script.onload = () => window.__LPA_BOARD_ATTEMPT_BOOT__?.();
     document.body.appendChild(script);
 
     return undefined;

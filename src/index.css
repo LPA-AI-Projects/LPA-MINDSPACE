@@ -59,14 +59,46 @@ body{
    CANVAS LAYER
 ══════════════════════════════════════ */
 .board-shell{
-  position:relative;
-  min-height:100vh;
+  position:fixed;
+  inset:0;
+  z-index:0;
   width:100%;
+  height:100%;
+  overflow:hidden;
+  pointer-events:none;
+}
+
+.board-shell #canvas-root,
+.board-shell #topbar,
+.board-shell #toolbar,
+.board-shell #shape-picker,
+.board-shell #pen-toolbar,
+.board-shell #text-toolbar,
+.board-shell #shape-toolbar,
+.board-shell #image-toolbar,
+.board-shell #ai-bar,
+.board-shell #statusbar,
+.board-shell #minimap-wrap,
+.board-shell #more-menu,
+.board-shell #share-panel,
+.board-shell #activity-panel,
+.board-shell #shortcuts-overlay,
+.board-shell #about-panel,
+.board-shell #export-menu,
+.board-shell #toast,
+.board-shell #ctx-menu,
+.board-shell #sel-toolbar,
+.board-shell #sel-ai-popup,
+.board-shell #sticky-color-picker,
+.board-shell #panel-backdrop,
+.board-shell #drop-overlay{
+  pointer-events:auto;
 }
 
 #canvas-root{
   position:fixed;
   inset:0;
+  z-index:0;
   overflow:hidden;
   cursor:default;
   pointer-events:all;

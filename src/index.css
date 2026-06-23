@@ -549,15 +549,15 @@ body.read-only-mode #canvas-world > *{
 }
 
 /* ══════════════════════════════════════
-   LEFT TOOLBAR
+   LEFT TOOLBAR — colorful interactive icons
 ══════════════════════════════════════ */
 #toolbar{
   position:fixed;
   left:18px;
   top:50%;
   transform:translateY(-50%);
-  background:rgba(20,20,20,0.94);
-  border:1px solid var(--ui-border2);
+  background:linear-gradient(180deg, #fafaf8 0%, #f7f6f3 100%);
+  border:1px solid rgba(20,20,20,0.09);
   border-radius:var(--radius-xl);
   padding:10px 8px;
   display:flex;
@@ -565,32 +565,58 @@ body.read-only-mode #canvas-world > *{
   align-items:center;
   gap:3px;
   z-index:100;
-  box-shadow:var(--shadow-tool);
+  box-shadow:0 1px 0 rgba(255,255,255,0.9) inset, 0 8px 32px rgba(20,20,20,0.12);
   backdrop-filter:blur(14px);
 }
 
 .tool-group-sep{
   width:24px;height:1px;
-  background:var(--ui-border);
+  background:rgba(20,20,20,0.08);
   margin:4px 0;
 }
 
 .tool-btn{
-  width:38px;height:38px;
+  --tool-color:var(--teal);
+  --tool-bg:rgba(46,157,145,0.12);
+  width:40px;height:40px;
   border-radius:var(--radius-md);
-  border:none;
+  border:1px solid transparent;
   background:transparent;
-  color:var(--ui-text2);
+  color:var(--black);
   cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   position:relative;
-  transition:all .15s;
+  transition:transform .15s var(--ease-out), background .15s, border-color .15s, box-shadow .15s;
   flex-shrink:0;
 }
-.tool-btn svg{pointer-events:none;transition:color .15s}
-.tool-btn:hover{background:var(--ui-surface2);color:var(--white)}
-.tool-btn.active{background:var(--teal-dim);color:var(--teal)}
-.tool-btn.active svg{color:var(--teal)}
+.tool-btn svg{
+  pointer-events:none;
+  transition:transform .15s var(--ease-out);
+  filter:drop-shadow(0 1px 1px rgba(20,20,20,0.08));
+}
+.tool-btn:hover{
+  background:var(--tool-bg);
+  border-color:rgba(20,20,20,0.06);
+  transform:scale(1.08);
+  box-shadow:0 4px 12px rgba(20,20,20,0.08);
+}
+.tool-btn:hover svg{transform:scale(1.05)}
+.tool-btn.active{
+  background:var(--tool-bg);
+  border-color:color-mix(in srgb, var(--tool-color) 35%, transparent);
+  box-shadow:0 0 0 2px color-mix(in srgb, var(--tool-color) 28%, transparent), 0 4px 14px rgba(20,20,20,0.1);
+  transform:scale(1.04);
+}
+
+.tool-btn[data-tool="hand"]{--tool-color:#2e9d91;--tool-bg:rgba(46,157,145,0.14)}
+.tool-btn[data-tool="select"]{--tool-color:#4f71f2;--tool-bg:rgba(79,113,242,0.14)}
+.tool-btn[data-tool="pen"]{--tool-color:#141414;--tool-bg:rgba(20,20,20,0.07)}
+.tool-btn[data-tool="text"]{--tool-color:#4f71f2;--tool-bg:rgba(79,113,242,0.12)}
+.tool-btn[data-tool="eraser"]{--tool-color:#e07a5f;--tool-bg:rgba(244,164,148,0.22)}
+.tool-btn[data-tool="sticky"]{--tool-color:#e6c200;--tool-bg:rgba(255,241,118,0.35)}
+.tool-btn[data-tool="shape"]{--tool-color:#2e9d91;--tool-bg:rgba(46,157,145,0.12)}
+.tool-btn[data-tool="image"]{--tool-color:#4f71f2;--tool-bg:rgba(79,113,242,0.12)}
+#more-btn{--tool-color:#141414;--tool-bg:rgba(20,20,20,0.06)}
 
 /* tooltip */
 .tool-btn::after{
@@ -598,8 +624,8 @@ body.read-only-mode #canvas-world > *{
   position:absolute;
   left:calc(100% + 10px);
   top:50%;transform:translateY(-50%);
-  background:var(--black);
-  color:var(--white);
+  background:#141414;
+  color:#fbfbfb;
   font-size:11px;
   font-weight:500;
   font-family:var(--font);
@@ -610,7 +636,7 @@ body.read-only-mode #canvas-world > *{
   opacity:0;
   transition:opacity .12s;
   box-shadow:var(--shadow-tooltip);
-  border:1px solid var(--ui-border);
+  border:1px solid rgba(251,251,251,0.1);
   letter-spacing:0.2px;
 }
 .tool-btn::before{
@@ -619,7 +645,7 @@ body.read-only-mode #canvas-world > *{
   left:calc(100% + 5px);
   top:50%;transform:translateY(-50%);
   border:5px solid transparent;
-  border-right-color:var(--black);
+  border-right-color:#141414;
   pointer-events:none;
   opacity:0;
   transition:opacity .12s;
@@ -875,11 +901,12 @@ body.tool-eraser #eraser-cursor{display:block}
 /* active indicator dot on toolbar */
 .tool-btn .active-dot{
   position:absolute;
-  bottom:5px;right:5px;
-  width:4px;height:4px;
+  bottom:4px;right:4px;
+  width:5px;height:5px;
   border-radius:50%;
-  background:var(--teal);
+  background:var(--tool-color);
   display:none;
+  box-shadow:0 0 0 2px #f7f6f3;
 }
 .tool-btn.active .active-dot{display:block}
 

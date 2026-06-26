@@ -32,35 +32,11 @@ let canvasRoot = null;
 let canvasWorld = null;
 
 function bindBoardDom() {
-  const mount = document.querySelector('.board-shell');
-  const root = mount?.querySelector('#canvas-root') || document.getElementById('canvas-root');
-  const world = root?.querySelector('#canvas-world') || mount?.querySelector('#canvas-world') || document.getElementById('canvas-world');
+  const root = document.getElementById('canvas-root');
+  const world = document.getElementById('canvas-world');
   canvasRoot = root;
   canvasWorld = world;
-  return !!(root && world && root.isConnected && world.isConnected);
-}
-
-/** Resolve the live canvas inside the React-mounted board shell. */
-function ensureCanvasReady() {
-  const mount = document.querySelector('.board-shell');
-  if (mount) {
-    const roots = mount.querySelectorAll('#canvas-root');
-    roots.forEach((node, index) => {
-      if (index > 0) node.remove();
-    });
-  }
-  // Clean up legacy reparenting from older builds
-  document.querySelectorAll('body > #canvas-root').forEach((node) => {
-    if (!mount?.contains(node)) node.remove();
-  });
-  return bindBoardDom();
-}
-
-function appendToCanvasWorld(el) {
-  if (!el) return null;
-  if (!ensureCanvasReady() || !canvasWorld) return null;
-  canvasWorld.appendChild(el);
-  return el;
+  return !!(root && world && root.isConnected);
 }
 
 function isEventOnCanvas(e) {
@@ -69,6 +45,14 @@ function isEventOnCanvas(e) {
   if (t === canvasRoot || canvasRoot.contains(t)) return true;
   const hit = document.elementFromPoint(e.clientX, e.clientY);
   return !!(hit && (hit === canvasRoot || canvasRoot.contains(hit)));
+}
+
+function isTransformHandleTarget(t) {
+  if (!(t instanceof Element)) return false;
+  return !!t.closest(
+    '.icon-resize-handle, .icon-rotate-handle, .image-resize-handle, ' +
+    '.shape-resize-handle, .text-resize-handle, .sticky-resize'
+  );
 }
 
 let zoomLabel = null;
@@ -91,72 +75,6 @@ function bindUiDom() {
   selRect = document.getElementById('sel-rect');
 }
 
-/** Paint state.objects onto the live canvas; retries until #canvas-world is mounted. */
-function scheduleBoardRedraw(maxAttempts = 300) {
-  let finished = false;
-  const attempt = (tries = 0) => {
-    if (finished) return;
-    if (!ensureCanvasReady()) {
-      if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
-      else console.warn('[board] canvas not ready after retries');
-      return;
-    }
-    try {
-      redrawAll();
-      updateObjectCount();
-      finished = true;
-      console.info('[board] painted', state.objects.length, 'objects,', canvasWorld?.childElementCount, 'dom nodes');
-    } catch (err) {
-      console.error('[board] redraw failed', err);
-      if (tries < maxAttempts) requestAnimationFrame(() => attempt(tries + 1));
-    }
-  };
-  attempt();
-  // Fallback for slow mounts / production cold starts
-  setTimeout(() => {
-    if (finished || !state.objects.length) return;
-    if (!ensureCanvasReady()) return;
-    try {
-      redrawAll();
-      updateObjectCount();
-      finished = true;
-      console.info('[board] painted (fallback)', state.objects.length, 'objects');
-    } catch (err) {
-      console.error('[board] redraw fallback failed', err);
-    }
-  }, 2500);
-}
-
-function normalizeObjectsList(objects) {
-  if (Array.isArray(objects)) return objects;
-  if (objects && typeof objects === 'object') return Object.values(objects);
-  return [];
-}
-
-function normalizeBoardStateData(data) {
-  if (!data || typeof data !== 'object') return null;
-  if (data.state && typeof data.state === 'object' && !Array.isArray(data.objects)) {
-    const inner = data.state;
-    return {
-      boardName: inner.boardName || data.boardName,
-      panX: inner.panX ?? data.panX,
-      panY: inner.panY ?? data.panY,
-      zoom: inner.zoom ?? data.zoom,
-      objects: inner.objects ?? data.objects,
-      sharing: inner.sharing ?? data.sharing,
-    };
-  }
-  return data;
-}
-
-function parseBoardStateRaw(raw) {
-  if (raw == null || raw === '') return null;
-  if (typeof raw === 'object') return normalizeBoardStateData(raw);
-  let data = JSON.parse(raw);
-  if (typeof data === 'string') data = JSON.parse(data);
-  return normalizeBoardStateData(data);
-}
-
 let lastPinchDist = null;
 let canvasEventsReady = false;
 
@@ -166,12 +84,14 @@ function ensureCanvasEvents() {
 
   document.addEventListener('mousedown', (e) => {
     if (!isEventOnCanvas(e)) return;
+    if (isTransformHandleTarget(e.target)) return;
     handleCanvasPointerDown(e);
   }, true);
 
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
     if (!isEventOnCanvas(e)) return;
+    if (isTransformHandleTarget(e.target)) return;
     handleCanvasPointerDown(e);
   }, true);
 
@@ -329,6 +249,7 @@ function renderObjectFromData(obj) {
   if (obj.type === 'text') return addTextToCanvas(obj);
   if (obj.type === 'shape') return renderShapeObj(obj);
   if (obj.type === 'image') return renderImageObj(obj);
+  if (obj.type === 'icon') return renderIconObj(obj);
   if (obj.type === 'stroke') return addStrokeToSvg(getDrawingSvg(), obj);
   return null;
 }
@@ -361,8 +282,6 @@ function isBoardAdmin() {
 function applyTransform() {
   bindBoardDom();
   if (!canvasWorld) return;
-  const zoom = Number.isFinite(state.zoom) && state.zoom > 0 ? state.zoom : 1;
-  state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
   canvasWorld.style.transform =
     `translate(${state.panX}px,${state.panY}px) scale(${state.zoom})`;
   updateGrid();
@@ -398,7 +317,7 @@ function isFloatingPanelVisible(el, id) {
   if (!el) return false;
   if (id === 'sel-ai-popup') return el.style.display === 'block';
   if (id === 'sel-toolbar') return el.classList.contains('visible');
-  if (['shape-toolbar', 'text-toolbar', 'image-toolbar'].includes(id)) {
+  if (['shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar'].includes(id)) {
     return el.classList.contains('visible');
   }
   return true;
@@ -409,7 +328,7 @@ function getFloatingUiObstacleRects(excludeIds = []) {
   const topbar = document.getElementById('topbar');
   if (topbar) rects.push(topbar.getBoundingClientRect());
 
-  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'sel-ai-popup'].forEach((id) => {
+  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sel-ai-popup'].forEach((id) => {
     if (excludeIds.includes(id)) return;
     const el = document.getElementById(id);
     if (!el || !isFloatingPanelVisible(el, id)) return;
@@ -466,7 +385,7 @@ function positionFloatingPanel(el, { anchorRect, excludeIds = [] }) {
 }
 
 function getActiveSelectionToolbarEl() {
-  for (const id of ['text-toolbar', 'shape-toolbar', 'image-toolbar', 'sel-toolbar']) {
+  for (const id of ['text-toolbar', 'shape-toolbar', 'image-toolbar', 'icon-toolbar', 'sel-toolbar']) {
     const el = document.getElementById(id);
     if (!el || !isFloatingPanelVisible(el, id)) continue;
     return el;
@@ -477,7 +396,7 @@ function getActiveSelectionToolbarEl() {
 function shouldHideSelToolbarForTypeToolbar() {
   if (selectedIds.size !== 1) return false;
   const obj = state.objects.find((o) => o.id === [...selectedIds][0]);
-  return !!obj && ['text', 'shape', 'image'].includes(obj.type);
+  return !!obj && ['text', 'shape', 'image', 'icon'].includes(obj.type);
 }
 
 function repositionSelectionAiPopup() {
@@ -546,6 +465,7 @@ function fitObjectsInView(ids) {
       const sel = obj.type==='sticky' ? `.sticky-note[data-obj-id="${obj.id}"]`
                 : obj.type==='text'   ? `.canvas-text[data-obj-id="${obj.id}"]`
                 : obj.type==='image'  ? `.image-obj[data-obj-id="${obj.id}"]`
+                : obj.type==='icon'   ? `.icon-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='shape'  ? `.shape-obj[data-obj-id="${obj.id}"]`
                 : null;
       const el = sel ? canvasWorld.querySelector(sel) : null;
@@ -628,6 +548,7 @@ const TOOL_HINTS = {
   sticky: 'Click to place a sticky note · right-click for options',
   shape:  'Click and drag to draw a shape · hold Shift to constrain',
   image:  'Click to pick a file · drag & drop an image · or press Ctrl+V to paste',
+  icon:   'Pick an icon · click the board to place · search by name or category',
 };
 
 function setTool(tool) {
@@ -654,6 +575,12 @@ function setTool(tool) {
   const penToolbar = document.getElementById('pen-toolbar');
   if (penToolbar) penToolbar.classList.toggle('visible', tool === 'pen');
 
+  const iconPicker = document.getElementById('icon-picker');
+  if (iconPicker) {
+    iconPicker.classList.toggle('visible', tool === 'icon');
+    if (tool === 'icon') ensureIconPickerReady();
+  }
+
   // image tool: open file picker immediately on tool activation (clean user gesture)
   if (tool === 'image') {
     setTimeout(() => triggerImageFilePicker(), 0);
@@ -668,6 +595,11 @@ function setTool(tool) {
 
   // context hint
   showHint(TOOL_HINTS[tool] || '');
+}
+
+function returnToSelectTool() {
+  if (state.tool === 'select' || state.tool === 'hand') return;
+  setTool('select');
 }
 
 function showHint(msg) {
@@ -725,7 +657,18 @@ function handleCanvasPointerDown(e) {
     return;
   }
   if (tool === 'image') {
-    // file picker already triggered by setTool — clicking canvas is a no-op
+    returnToSelectTool();
+    handleSelectMousedown(e);
+    return;
+  }
+
+  if (tool === 'icon') {
+    if (!pickedIconId) {
+      returnToSelectTool();
+      handleSelectMousedown(e);
+      return;
+    }
+    placeIcon(e);
     return;
   }
 }
@@ -813,22 +756,15 @@ state.isDrawing = false;
 state.isErasing = false;
 
 function getDrawingSvg() {
-  ensureCanvasReady();
+  bindBoardDom();
   if (!canvasWorld) return null;
+  // one persistent SVG layer for all strokes
   let svg = document.getElementById('drawing-layer');
-  if (svg && !svg.isConnected) {
-    svg.remove();
-    svg = null;
-  }
-  if (svg && svg.parentElement !== canvasWorld) {
-    svg.remove();
-    svg = null;
-  }
   if (!svg) {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.id = 'drawing-layer';
     svg.style.cssText = 'position:absolute;top:0;left:0;width:200vw;height:200vh;overflow:visible;z-index:5;pointer-events:none;';
-    appendToCanvasWorld(svg);
+    canvasWorld.appendChild(svg);
   }
   return svg;
 }
@@ -861,6 +797,7 @@ function endStroke() {
   state.isDrawing = false;
   if (currentPoints.length < 2) {
     strokeSvgEl?.remove();
+    returnToSelectTool();
     return;
   }
   const obj = stampOwner({
@@ -881,6 +818,7 @@ function endStroke() {
   // ── Shape recognition: analyse and maybe show convert popup
   const recognized = recognizeShape(currentPoints);
   if (recognized) showConvertPopup(obj.id, recognized, pathEl);
+  returnToSelectTool();
 }
 
 function pointsToPath(pts) {
@@ -953,6 +891,7 @@ function placeText(e) {
     };
     editable.addEventListener('blur', onFirstBlur);
   }
+  returnToSelectTool();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1140,12 +1079,13 @@ function endErase() {
     state.erasedSomething = false;
   }
   state.isErasing = false;
+  returnToSelectTool();
 }
 
 // ═══════════════════════════════════════════════════
 // KEYBOARD SHORTCUTS
 // ═══════════════════════════════════════════════════
-const KEY_TOOLS = { h:'hand', v:'select', p:'pen', t:'text', e:'eraser', s:'sticky', r:'shape', i:'image' };
+const KEY_TOOLS = { h:'hand', v:'select', p:'pen', t:'text', e:'eraser', s:'sticky', r:'shape', i:'image', o:'icon' };
 
 document.addEventListener('keydown', ev => {
   const tag = document.activeElement.tagName;
@@ -1339,8 +1279,6 @@ function redo() {
 }
 
 function redrawAll() {
-  if (!ensureCanvasReady() || !canvasWorld) return;
-
   // 1. clear selections safely
   if (typeof clearAllSelections === 'function') clearAllSelections();
 
@@ -1351,6 +1289,7 @@ function redrawAll() {
   canvasWorld.querySelectorAll('.sticky-note').forEach(el => el.remove());
   canvasWorld.querySelectorAll('.shape-obj').forEach(el => el.remove());
   canvasWorld.querySelectorAll('.image-obj').forEach(el => el.remove());
+  canvasWorld.querySelectorAll('.icon-obj').forEach(el => el.remove());
 
   // 3. rebuild from state.objects
   const svg = getDrawingSvg();
@@ -1379,6 +1318,9 @@ function redrawAll() {
     } else if (obj.type === 'image') {
       const imEl = renderImageObj(obj);
       if (obj.locked && imEl) applyLockStyle(imEl);
+    } else if (obj.type === 'icon') {
+      const icEl = renderIconObj(obj);
+      if (obj.locked && icEl) applyLockStyle(icEl);
     }
   });
 }
@@ -1404,8 +1346,6 @@ function addStrokeToSvg(svg, obj) {
 }
 
 function addTextToCanvas(obj) {
-  bindBoardDom();
-  if (!canvasWorld) return null;
   const wrap = document.createElement('div');
   wrap.className = 'canvas-text';
   wrap.dataset.objId = obj.id;
@@ -1531,7 +1471,7 @@ function addTextToCanvas(obj) {
   });
   editable.addEventListener('mousedown', ev => ev.stopPropagation());
 
-  appendToCanvasWorld(wrap);
+  canvasWorld.appendChild(wrap);
   return wrap;
 }
 
@@ -1554,6 +1494,8 @@ function selectAll() {
     if (shape) shape.classList.add('selected-shape');
     const img = document.querySelector(`.image-obj[data-obj-id="${obj.id}"]`);
     if (img) img.classList.add('selected-image');
+    const icon = document.querySelector(`.icon-obj[data-obj-id="${obj.id}"]`);
+    if (icon) icon.classList.add('selected-icon');
     const txt = document.querySelector(`.canvas-text[data-obj-id="${obj.id}"]`);
     if (txt) txt.style.border = '1.5px solid #2e9d91';
   });
@@ -2206,65 +2148,28 @@ function saveToStorage() {
 
 function loadFromStorage() {
   try {
-    const raw =
-      window.__LPA_BOARD_STATE_OBJECT__ ||
-      window.supabaseInitialState ||
-      localStorage.getItem('lpa-mindspace-v1');
-    const data = parseBoardStateRaw(raw);
-    if (!data) {
+    const raw = window.supabaseInitialState || localStorage.getItem('lpa-mindspace-v1');
+    if (!raw) {
       History.baseline();
       return;
     }
+    const data = JSON.parse(raw);
     state.boardName = data.boardName || 'LP MindSpace';
-    state.panX = Number.isFinite(data.panX) ? data.panX : 0;
-    state.panY = Number.isFinite(data.panY) ? data.panY : 0;
-    state.zoom = Number.isFinite(data.zoom) && data.zoom > 0 ? data.zoom : 1;
-    state.objects = hydrateObjectsList(normalizeObjectsList(data.objects));
+    state.panX = data.panX || 0;
+    state.panY = data.panY || 0;
+    state.zoom = data.zoom || 1;
+    state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
-    const boardNameInput = document.getElementById('boardName');
-    if (boardNameInput) boardNameInput.value = state.boardName;
+    document.getElementById('boardName').value = state.boardName;
     document.title = state.boardName + ' — LP MindSpace';
     applyTransform();
-    scheduleBoardRedraw();
-    History.baseline();
-    console.info('[board] loaded', state.objects.length, 'objects');
-  } catch (e) {
-    console.error('[board] loadFromStorage failed', e);
-    History.baseline();
-  }
-}
-
-async function hydrateInitialBoardState() {
-  const access = getLiveBoardAccess();
-  const hasInlineState =
-    window.__LPA_BOARD_STATE_OBJECT__ != null &&
-    normalizeObjectsList(
-      normalizeBoardStateData(
-        typeof window.__LPA_BOARD_STATE_OBJECT__ === 'object'
-          ? window.__LPA_BOARD_STATE_OBJECT__
-          : parseBoardStateRaw(window.__LPA_BOARD_STATE_OBJECT__),
-      )?.objects,
-    ).length > 0;
-
-  if (!hasInlineState && window.supabaseClient && access.boardId) {
-    try {
-      const { data, error } = await window.supabaseClient
-        .from('boards')
-        .select('state')
-        .eq('id', access.boardId)
-        .maybeSingle();
-      if (!error && data?.state != null) {
-        window.__LPA_BOARD_STATE_OBJECT__ = data.state;
-        console.info('[board] fetched state from Supabase for board', access.boardId);
-      } else if (error) {
-        console.error('[board] Supabase state fetch failed', error.message);
-      }
-    } catch (err) {
-      console.error('[board] Supabase state fetch failed', err);
-    }
-  }
-
-  loadFromStorage();
+    updateObjectCount();
+    // Defer redrawAll until after ALL JS is initialized
+    setTimeout(() => {
+      redrawAll();
+      History.baseline(); // baseline = what user sees on load, nothing to undo
+    }, 0);
+  } catch(e) {}
 }
 
 // auto-save every 10s
@@ -2274,12 +2179,11 @@ window.addEventListener('beforeunload', saveToStorage);
 // ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
-async function init() {
+function init() {
   const access = getLiveBoardAccess();
   realtimeClientId = `${access.userId || 'anon'}:${Math.random().toString(36).slice(2, 10)}`;
-  ensureCanvasReady();
   applyTransform();
-  await hydrateInitialBoardState();
+  loadFromStorage();
   lastPublishedBoardState = getCurrentBoardState();
   applyAccessModeUi();
   updateGridToggleUi();
@@ -2289,14 +2193,14 @@ async function init() {
   showHint('Welcome to LP MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
 }
 
-/** Re-paint in-memory objects after React injects a fresh board shell. */
+/** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
 function restoreCanvasIfDomWasCleared() {
-  bindBoardDom();
-  if (!canvasWorld) return;
-  const hasDom =
-    canvasWorld.querySelector('.sticky-note, .shape-obj, .canvas-text, .image-obj') ||
+  const world = document.getElementById('canvas-world');
+  if (!world || !state.objects.length) return;
+  const hasObjects =
+    world.querySelector('.sticky-note, .shape-obj, .canvas-text, .image-obj, .icon-obj') ||
     document.getElementById('drawing-layer');
-  if (!hasDom && state.objects.length) scheduleBoardRedraw();
+  if (!hasObjects) redrawAll();
 }
 
 function serializeCurrentBoardState() {
@@ -2415,17 +2319,6 @@ function sanitizeSnapshotForSync(snapshot) {
 
 function applyRemoteBoardState(remoteState, sourceLabel) {
   if (!remoteState || typeof remoteState !== 'object') return;
-  const remoteList = normalizeObjectsList(
-    normalizeBoardStateData(remoteState)?.objects ?? remoteState.objects,
-  );
-  if (
-    sourceLabel === 'latest' &&
-    remoteList.length === 0 &&
-    (state.objects || []).length > 0
-  ) {
-    console.warn('[board] ignoring empty remote snapshot; keeping local objects');
-    return;
-  }
   let currentSerialized = '';
   let remoteSerialized = '';
   try {
@@ -2438,6 +2331,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
 
   const previousObjects = state.objects || [];
   const previousById = createObjectMap(previousObjects);
+  const remoteList = Array.isArray(remoteState.objects) ? remoteState.objects : [];
   const mergedRemoteList = remoteList.map((obj) => {
     if (obj?.type !== 'image' || obj.src) return obj;
     const prev = previousById.get(String(obj.id));
@@ -2461,7 +2355,8 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   if (boardNameInput) boardNameInput.value = state.boardName;
   document.title = state.boardName + ' — LP MindSpace';
   applyTransform();
-  scheduleBoardRedraw();
+  redrawAll();
+  updateObjectCount();
   History.baseline();
   lastPublishedBoardState = cloneBoardStateSnapshot(remoteState);
   if (sourceLabel === 'latest') showToast('Board updated');
@@ -2981,6 +2876,7 @@ function clearAllSelections() {
     el.style.border = '1.5px solid transparent';
     el.querySelectorAll('.text-resize-handle').forEach(h => h.style.display = 'none');
   });
+  document.querySelectorAll('.icon-obj.selected-icon').forEach(el => el.classList.remove('selected-icon'));
   hideSelToolbar();
   hideStickyPicker();
 }
@@ -3168,6 +3064,12 @@ function startObjDrag(e, clickedId) {
       }
     });
     positionSelToolbar();
+    if (selectedIconId && selectedIds.size === 1 && selectedIds.has(selectedIconId)) {
+      const iconEl = document.querySelector(`.icon-obj[data-obj-id="${selectedIconId}"]`);
+      if (iconEl && document.getElementById('icon-toolbar')?.classList.contains('visible')) {
+        showIconToolbar(iconEl);
+      }
+    }
   }
 
   function onUp() {
@@ -3267,6 +3169,17 @@ function applyBoxSelect(bx, by, bw, bh) {
       hit = true;
     }
   });
+  // icons
+  document.querySelectorAll('.icon-obj').forEach(el => {
+    if (overlaps(el.getBoundingClientRect())) {
+      const id = el.dataset.objId;
+      const obj = state.objects.find((o) => o.id === id);
+      if (!obj || !canSelectObjectForEdit(obj)) return;
+      selectedIds.add(id);
+      el.classList.add('selected-icon');
+      hit = true;
+    }
+  });
   // strokes — check each point
   state.objects.forEach(obj => {
     if (obj.type !== 'stroke' || !canSelectObjectForEdit(obj)) return;
@@ -3286,6 +3199,7 @@ function applyBoxSelect(bx, by, bw, bh) {
       if (obj?.type === 'shape' && el) showShapeToolbar(el);
       else if (obj?.type === 'text' && el) showTextToolbar(el);
       else if (obj?.type === 'image' && el) showImageToolbar(el);
+      else if (obj?.type === 'icon' && el) selectIconObj(id, true);
     }
   }
 }
@@ -3306,6 +3220,7 @@ function deleteSelectedObj() {
     canvasWorld.querySelector(`.canvas-text[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.shape-obj[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.image-obj[data-obj-id="${id}"]`)?.remove();
+    canvasWorld.querySelector(`.icon-obj[data-obj-id="${id}"]`)?.remove();
     document.querySelector(`path[data-obj-id="${id}"]`)?.remove();
     state.objects = state.objects.filter(o => o.id !== id);
   });
@@ -3349,6 +3264,8 @@ function duplicateSelectedObj() {
     } else if (obj.type === 'stroke') {
       copy.points = obj.points.map(p => ({ x: p.x + 24, y: p.y + 24 }));
       addStrokeToSvg(getDrawingSvg(), copy);
+    } else if (obj.type === 'icon') {
+      renderIconObj(copy);
     }
   });
   clearAllSelections();
@@ -3365,8 +3282,10 @@ document.addEventListener('mousedown', (e) => {
   if (state.tool !== 'select' || !isEventOnCanvas(e)) return;
   const isOnObj = e.target.closest('.sticky-note') ||
                   e.target.closest('.canvas-text') ||
+                  e.target.closest('.icon-obj') ||
                   e.target.closest('#sel-toolbar') ||
-                  e.target.closest('#sticky-color-picker');
+                  e.target.closest('#sticky-color-picker') ||
+                  e.target.closest('#icon-picker');
   if (!isOnObj) clearAllSelections();
 });
 
@@ -3705,8 +3624,6 @@ function buildLineSVG(type, x1, y1, x2, y2, stroke, sw) {
 
 // ── Render a shape object to the DOM
 function renderShapeObj(obj) {
-  bindBoardDom();
-  if (!canvasWorld) return null;
   const el = document.createElement('div');
   el.className = 'shape-obj';
   el.dataset.objId = obj.id;
@@ -3984,7 +3901,7 @@ function renderShapeObj(obj) {
     }
   });
 
-  appendToCanvasWorld(el);
+  canvasWorld.appendChild(el);
   return el;
 }
 
@@ -4131,6 +4048,8 @@ document.addEventListener('keydown', ev => {
 whenDomReady(() => {
   initShapeToolbar();
   buildShapePicker();
+  initIconPicker();
+  initIconToolbar();
 });
 
 
@@ -4269,8 +4188,6 @@ async function placeImageOnCanvas(dataUrl, naturalW, naturalH) {
 
 // ── Render image object to DOM
 function renderImageObj(obj) {
-  bindBoardDom();
-  if (!canvasWorld) return null;
   const hydrated = hydrateImageObject(obj);
   const el = document.createElement('div');
   el.className = 'image-obj';
@@ -4374,7 +4291,7 @@ function renderImageObj(obj) {
     }
   });
 
-  appendToCanvasWorld(el);
+  canvasWorld.appendChild(el);
   return el;
 }
 
@@ -4586,6 +4503,654 @@ function loadImageFile(file, dropX, dropY) {
   reader.readAsDataURL(file);
 }
 
+// ═══════════════════════════════════════════════════
+// ICONS
+// ═══════════════════════════════════════════════════
+
+const ICON_COLORS = ['#141414', '#2e9d91', '#4f71f2', '#f2541d', '#9b59b6', '#f5a623', '#e74c3c', '#fbfbfb'];
+const DEFAULT_ICON_SIZE = 48;
+
+let pickedIconId = null;
+let pickedIconColor = '#2e9d91';
+let iconPickerCategory = 'all';
+let iconPickerSearch = '';
+
+function getIconLibrary() {
+  return window.BOARD_ICON_LIBRARY || { categories: [], icons: [] };
+}
+
+function getIconDef(iconId) {
+  const lib = getIconLibrary();
+  return lib.icons.find((i) => i.id === iconId) || null;
+}
+
+function parseIconColorHex(color) {
+  if (!color || typeof color !== 'string') return null;
+  const c = color.trim().toLowerCase();
+  if (!c.startsWith('#')) return null;
+  let hex = c.slice(1);
+  if (hex.length === 3) hex = hex.split('').map((ch) => ch + ch).join('');
+  if (hex.length !== 6) return null;
+  return {
+    r: parseInt(hex.slice(0, 2), 16),
+    g: parseInt(hex.slice(2, 4), 16),
+    b: parseInt(hex.slice(4, 6), 16),
+  };
+}
+
+function iconColorLuminance(color) {
+  const rgb = parseIconColorHex(color);
+  if (!rgb) return 0;
+  return (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+}
+
+function isDarkIconColor(color) {
+  return iconColorLuminance(color) < 0.45;
+}
+
+function isLightIconColor(color) {
+  return iconColorLuminance(color) > 0.82;
+}
+
+function buildIconPathLayers(iconDef, color) {
+  const parts = iconDef.parts || [];
+  const resolved = color || '#141414';
+  const dark = isDarkIconColor(resolved);
+  const light = isLightIconColor(resolved);
+  const layers = [];
+
+  if (iconDef.fill) {
+    if (dark) {
+      layers.push(...parts.map((d) =>
+        `<path d="${d}" fill="none" stroke="rgba(255,255,255,0.95)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`
+      ));
+    } else if (light) {
+      layers.push(...parts.map((d) =>
+        `<path d="${d}" fill="none" stroke="#141414" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>`
+      ));
+    }
+    layers.push(...parts.map((d) => `<path d="${d}" fill="${resolved}"/>`));
+    if (light) {
+      layers.push(...parts.map((d) =>
+        `<path d="${d}" fill="none" stroke="rgba(20,20,20,0.55)" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>`
+      ));
+    }
+  } else {
+    if (dark) {
+      layers.push(...parts.map((d) =>
+        `<path d="${d}" fill="none" stroke="rgba(255,255,255,0.95)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
+      ));
+    } else if (light) {
+      layers.push(...parts.map((d) =>
+        `<path d="${d}" fill="none" stroke="#141414" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>`
+      ));
+    }
+    layers.push(...parts.map((d) =>
+      `<path d="${d}" fill="none" stroke="${resolved}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>`
+    ));
+  }
+
+  return layers.join('');
+}
+
+function iconDefToSvgMarkup(iconDef, color) {
+  const inner = buildIconPathLayers(iconDef, color);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${inner}</svg>`;
+}
+
+function iconDefToInnerHtml(iconDef, color) {
+  return buildIconPathLayers(iconDef, color);
+}
+
+function applyIconContrastState(innerEl, color) {
+  if (!innerEl) return;
+  const resolved = color || '#141414';
+  if (isDarkIconColor(resolved)) innerEl.dataset.contrast = 'dark';
+  else if (isLightIconColor(resolved)) innerEl.dataset.contrast = 'light';
+  else innerEl.removeAttribute('data-contrast');
+}
+
+function applyIconObjDom(el, obj) {
+  const size = obj.w || DEFAULT_ICON_SIZE;
+  const h = obj.h || size;
+  el.style.left = `${obj.x}px`;
+  el.style.top = `${obj.y}px`;
+  el.style.width = `${size}px`;
+  el.style.height = `${h}px`;
+  const inner = el.querySelector('.icon-obj-inner');
+  if (inner) inner.style.transform = `rotate(${obj.rotation || 0}deg)`;
+}
+
+function updateIconSvgContent(el, obj) {
+  const def = getIconDef(obj.iconId);
+  if (!def) return;
+  const svg = el.querySelector('.icon-obj-inner svg');
+  if (svg) svg.innerHTML = iconDefToInnerHtml(def, obj.color || '#141414');
+  applyIconContrastState(el.querySelector('.icon-obj-inner'), obj.color);
+}
+
+function startIconResize(ev, obj, el, handlePos) {
+  if (!guardEditObject(obj)) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  const startX = ev.clientX;
+  const startY = ev.clientY;
+  const origX = obj.x;
+  const origY = obj.y;
+  const origSize = obj.w || DEFAULT_ICON_SIZE;
+  let didResize = false;
+
+  function onMove(mv) {
+    didResize = true;
+    const dx = (mv.clientX - startX) / state.zoom;
+    const dy = (mv.clientY - startY) / state.zoom;
+    const pos = handlePos;
+    let delta = 0;
+
+    if (pos === 'br') delta = Math.max(dx, dy);
+    else if (pos === 'bl') delta = Math.max(-dx, dy);
+    else if (pos === 'tr') delta = Math.max(dx, -dy);
+    else if (pos === 'tl') delta = Math.max(-dx, -dy);
+    else if (pos === 'mr') delta = dx;
+    else if (pos === 'ml') delta = -dx;
+    else if (pos === 'bm') delta = dy;
+    else if (pos === 'tm') delta = -dy;
+
+    let newSize = Math.max(16, Math.min(400, origSize + delta));
+    if (pos.includes('l')) obj.x = origX + (origSize - newSize);
+    if (pos.includes('t') || pos === 'tm') obj.y = origY + (origSize - newSize);
+    if (pos === 'mr') { /* x unchanged */ }
+    if (pos === 'ml') obj.x = origX + (origSize - newSize);
+    if (pos === 'bm') { /* y unchanged */ }
+    if (pos === 'tm') obj.y = origY + (origSize - newSize);
+
+    obj.w = newSize;
+    obj.h = newSize;
+    applyIconObjDom(el, obj);
+    updateIconSizeLabel();
+    if (document.getElementById('icon-toolbar')?.classList.contains('visible')) {
+      showIconToolbar(el);
+    }
+  }
+
+  function onUp() {
+    if (didResize) { History.push(); saveToStorage(); }
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function startIconRotate(ev, obj, el) {
+  if (!guardEditObject(obj)) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  const rect = el.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const startAngle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI);
+  const startRotation = obj.rotation || 0;
+  let didRotate = false;
+
+  function onMove(mv) {
+    didRotate = true;
+    const angle = Math.atan2(mv.clientY - cy, mv.clientX - cx) * (180 / Math.PI);
+    obj.rotation = Math.round(startRotation + (angle - startAngle));
+    applyIconObjDom(el, obj);
+    if (document.getElementById('icon-toolbar')?.classList.contains('visible')) {
+      showIconToolbar(el);
+    }
+  }
+
+  function onUp() {
+    if (didRotate) { History.push(); saveToStorage(); }
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function renderIconObj(obj) {
+  const def = getIconDef(obj.iconId);
+  if (!def) return null;
+
+  const el = document.createElement('div');
+  el.className = 'icon-obj';
+  el.dataset.objId = obj.id;
+  const size = obj.w || DEFAULT_ICON_SIZE;
+  el.style.cssText = `position:absolute;left:${obj.x}px;top:${obj.y}px;width:${size}px;height:${obj.h || size}px;`;
+  el.title = def.label || obj.iconId;
+
+  const inner = document.createElement('div');
+  inner.className = 'icon-obj-inner';
+  inner.innerHTML = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">${iconDefToInnerHtml(def, obj.color || '#141414')}</svg>`;
+  applyIconContrastState(inner, obj.color);
+  el.appendChild(inner);
+
+  const stem = document.createElement('div');
+  stem.className = 'icon-rotate-stem';
+  el.appendChild(stem);
+
+  const rotateHandle = document.createElement('div');
+  rotateHandle.className = 'icon-rotate-handle';
+  rotateHandle.title = 'Drag to rotate';
+  el.appendChild(rotateHandle);
+  rotateHandle.addEventListener('mousedown', (ev) => startIconRotate(ev, obj, el), true);
+
+  const HANDLES = [
+    { pos: 'tl', cur: 'nwse-resize', css: 'top:-5px;left:-5px;' },
+    { pos: 'tm', cur: 'ns-resize', css: 'top:-5px;left:50%;transform:translateX(-50%);' },
+    { pos: 'tr', cur: 'nesw-resize', css: 'top:-5px;right:-5px;' },
+    { pos: 'ml', cur: 'ew-resize', css: 'top:50%;left:-5px;transform:translateY(-50%);' },
+    { pos: 'mr', cur: 'ew-resize', css: 'top:50%;right:-5px;transform:translateY(-50%);' },
+    { pos: 'bl', cur: 'nesw-resize', css: 'bottom:-5px;left:-5px;' },
+    { pos: 'bm', cur: 'ns-resize', css: 'bottom:-5px;left:50%;transform:translateX(-50%);' },
+    { pos: 'br', cur: 'nwse-resize', css: 'bottom:-5px;right:-5px;' },
+  ];
+
+  HANDLES.forEach((h) => {
+    const rh = document.createElement('div');
+    rh.className = 'icon-resize-handle';
+    rh.style.cssText = `${h.css}cursor:${h.cur};position:absolute;`;
+    rh.dataset.pos = h.pos;
+    el.appendChild(rh);
+    rh.addEventListener('mousedown', (ev) => startIconResize(ev, obj, el, h.pos), true);
+  });
+
+  applyIconObjDom(el, obj);
+
+  el.addEventListener('mousedown', (ev) => {
+    if (ev.target.closest('.icon-resize-handle') || ev.target.closest('.icon-rotate-handle')) return;
+    if (state.tool === 'select') {
+      ev.stopPropagation();
+      if (selectedIds.size > 1 && selectedIds.has(obj.id)) {
+        startObjDrag(ev, obj.id);
+      } else {
+        selectIconObj(obj.id, ev.ctrlKey || ev.metaKey);
+        startObjDrag(ev, obj.id);
+      }
+    } else {
+      ev.stopPropagation();
+    }
+  });
+
+  canvasWorld.appendChild(el);
+  return el;
+}
+
+let selectedIconId = null;
+
+function selectIconObj(id, addMode) {
+  const obj = state.objects.find((o) => o.id === id);
+  if (!obj || !canSelectObjectForEdit(obj)) {
+    notifyNotYourWork();
+    return;
+  }
+  if (!addMode) clearAllSelections();
+  selectedIconId = id;
+  selectedIds.add(id);
+  const el = document.querySelector(`.icon-obj[data-obj-id="${id}"]`);
+  if (!el) return;
+  el.classList.add('selected-icon');
+  el.querySelectorAll('.icon-resize-handle').forEach((h) => { h.style.display = 'block'; });
+  const rot = el.querySelector('.icon-rotate-handle');
+  if (rot) rot.style.display = 'block';
+  showIconToolbar(el);
+  updateSelToolbar();
+}
+
+function showIconToolbar(el) {
+  const tb = document.getElementById('icon-toolbar');
+  if (!tb) return;
+  hideSelToolbar();
+  tb.classList.add('visible');
+  updateIconSizeLabel();
+  syncIconToolbarColors();
+  requestAnimationFrame(() => {
+    positionFloatingPanel(tb, {
+      anchorRect: el.getBoundingClientRect(),
+      excludeIds: ['icon-toolbar'],
+    });
+    repositionSelectionAiPopup();
+  });
+}
+
+function hideIconToolbar() {
+  document.getElementById('icon-toolbar')?.classList.remove('visible');
+}
+
+function updateIconSizeLabel() {
+  if (!selectedIconId) return;
+  const obj = state.objects.find((o) => o.id === selectedIconId);
+  if (!obj) return;
+  const lbl = document.getElementById('icb-size');
+  const size = Math.round(obj.w || DEFAULT_ICON_SIZE);
+  const rot = obj.rotation || 0;
+  if (lbl) lbl.textContent = rot ? `${size} × ${size} · ${rot}°` : `${size} × ${size}`;
+}
+
+function syncIconToolbarColors() {
+  if (!selectedIconId) return;
+  const obj = state.objects.find((o) => o.id === selectedIconId);
+  if (!obj) return;
+  document.querySelectorAll('.icb-color-swatch').forEach((s) => {
+    s.classList.toggle('active', s.dataset.color === obj.color);
+  });
+}
+
+function rotateSelectedIcon(degrees) {
+  if (!selectedIconId) return;
+  const obj = state.objects.find((o) => o.id === selectedIconId);
+  if (!obj || !guardEditObject(obj)) return;
+  obj.rotation = ((obj.rotation || 0) + degrees) % 360;
+  const el = document.querySelector(`.icon-obj[data-obj-id="${selectedIconId}"]`);
+  if (el) {
+    applyIconObjDom(el, obj);
+    showIconToolbar(el);
+  }
+  updateIconSizeLabel();
+  History.push();
+  saveToStorage();
+}
+
+function setSelectedIconColor(color) {
+  if (!selectedIconId) return;
+  const obj = state.objects.find((o) => o.id === selectedIconId);
+  if (!obj || !guardEditObject(obj)) return;
+  obj.color = color;
+  const el = document.querySelector(`.icon-obj[data-obj-id="${selectedIconId}"]`);
+  if (el) {
+    updateIconSvgContent(el, obj);
+    showIconToolbar(el);
+  }
+  syncIconToolbarColors();
+  History.push();
+  saveToStorage();
+}
+
+function duplicateSelectedIcon() {
+  if (!selectedIconId) return;
+  const obj = state.objects.find((o) => o.id === selectedIconId);
+  if (!obj) return;
+  const copy = cloneObjectWithNewOwner(obj, 24, 24);
+  state.objects.push(copy);
+  updateObjectCount();
+  renderIconObj(copy);
+  clearAllSelections();
+  selectIconObj(copy.id);
+  History.push();
+  saveToStorage();
+  showToast('Duplicated');
+}
+
+function deleteSelectedIcon() {
+  if (!selectedIconId) return;
+  document.querySelector(`.icon-obj[data-obj-id="${selectedIconId}"]`)?.remove();
+  state.objects = state.objects.filter((o) => o.id !== selectedIconId);
+  selectedIds.delete(selectedIconId);
+  selectedIconId = null;
+  hideIconToolbar();
+  updateObjectCount();
+  History.push();
+  saveToStorage();
+  showToast('Deleted');
+}
+
+function initIconToolbar() {
+  const wrap = document.getElementById('icb-colors');
+  if (!wrap || wrap.dataset.inited === '1') return;
+  wrap.dataset.inited = '1';
+  ICON_COLORS.forEach((color) => {
+    const sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'icb-color-swatch';
+    sw.dataset.color = color;
+    sw.style.background = color;
+    if (color === '#fbfbfb') sw.style.border = '1px solid rgba(255,255,255,0.25)';
+    sw.title = color;
+    sw.addEventListener('mousedown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setSelectedIconColor(color);
+    });
+    wrap.appendChild(sw);
+  });
+}
+
+function placeIcon(e) {
+  if (!pickedIconId) {
+    showToast('Pick an icon from the panel first');
+    return;
+  }
+  const def = getIconDef(pickedIconId);
+  if (!def) {
+    showToast('Icon not found');
+    return;
+  }
+
+  const wp = screenToWorld(e.clientX, e.clientY);
+  const size = DEFAULT_ICON_SIZE;
+  const obj = stampOwner({
+    id: uid(),
+    type: 'icon',
+    iconId: pickedIconId,
+    x: wp.x - size / 2,
+    y: wp.y - size / 2,
+    w: size,
+    h: size,
+    color: pickedIconColor,
+  });
+  state.objects.push(obj);
+  renderIconObj(obj);
+  updateObjectCount();
+  History.push();
+  saveToStorage();
+  showToast(def.label || 'Icon placed');
+  returnToSelectTool();
+  selectIconObj(obj.id);
+}
+
+function filterIconList() {
+  const lib = getIconLibrary();
+  const q = iconPickerSearch.trim().toLowerCase();
+  return lib.icons.filter((icon) => {
+    if (iconPickerCategory !== 'all' && icon.cat !== iconPickerCategory) return false;
+    if (!q) return true;
+    return icon.label.toLowerCase().includes(q) || icon.id.includes(q) || icon.cat.includes(q);
+  });
+}
+
+function syncIconPickerTileBg() {
+  const grid = document.getElementById('icon-grid');
+  if (!grid) return;
+  grid.dataset.tileBg = isLightIconColor(pickedIconColor) ? 'dark' : 'light';
+}
+
+function renderIconGrid() {
+  const grid = document.getElementById('icon-grid');
+  if (!grid) return;
+  syncIconPickerTileBg();
+  grid.innerHTML = '';
+
+  const icons = filterIconList();
+  if (!icons.length) {
+    grid.innerHTML = '<div class="icon-picker-empty">No icons match your search</div>';
+    return;
+  }
+
+  icons.forEach((icon) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icon-pick-btn' + (pickedIconId === icon.id ? ' active' : '');
+    btn.title = icon.label;
+    btn.dataset.iconId = icon.id;
+    btn.innerHTML = `<svg viewBox="0 0 24 24">${iconDefToInnerHtml(icon, pickedIconColor)}</svg>`;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      pickedIconId = icon.id;
+      document.querySelectorAll('.icon-pick-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      showHint(`Click the board to place “${icon.label}”`);
+    });
+    grid.appendChild(btn);
+  });
+}
+
+function renderIconCategories() {
+  const wrap = document.getElementById('icon-categories');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const lib = getIconLibrary();
+  lib.categories.forEach((cat) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icon-cat-btn' + (iconPickerCategory === cat.id ? ' active' : '');
+    btn.textContent = cat.label;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      iconPickerCategory = cat.id;
+      document.querySelectorAll('.icon-cat-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderIconGrid();
+    });
+    wrap.appendChild(btn);
+  });
+}
+
+function loadIconLibraryScript(onReady) {
+  if (getIconLibrary().icons.length) {
+    onReady();
+    return;
+  }
+  const done = () => {
+    if (getIconLibrary().icons.length) onReady();
+    else onReady();
+  };
+  const existing = document.querySelector('script[data-lpa-board-icons]');
+  if (existing) {
+    if (window.__LPA_BOARD_ICONS_LOADED__) {
+      done();
+    } else {
+      existing.addEventListener('load', done, { once: true });
+    }
+    return;
+  }
+  const buildId = window.__LPA_BUILD_ID__ || '';
+  const script = document.createElement('script');
+  script.setAttribute('data-lpa-board-icons', '1');
+  script.src = buildId ? `/board-icons.js?v=${buildId}` : '/board-icons.js';
+  script.onload = () => {
+    window.__LPA_BOARD_ICONS_LOADED__ = true;
+    done();
+  };
+  script.onerror = done;
+  document.body.appendChild(script);
+}
+
+function ensureIconPickerReady() {
+  const picker = document.getElementById('icon-picker');
+  if (!picker) return;
+
+  const build = () => {
+    const lib = getIconLibrary();
+    if (!lib.icons.length) {
+      const grid = document.getElementById('icon-grid');
+      if (grid) {
+        grid.innerHTML = '<div class="icon-picker-empty">Could not load icons — refresh the page</div>';
+      }
+      picker.dataset.inited = '';
+      return;
+    }
+
+    if (!pickedIconId) pickedIconId = lib.icons[0].id;
+
+    if (picker.dataset.inited !== '1') {
+      const colorsWrap = document.getElementById('icon-colors');
+      if (colorsWrap && !colorsWrap.childElementCount) {
+        ICON_COLORS.forEach((color) => {
+          const sw = document.createElement('button');
+          sw.type = 'button';
+          sw.className = 'icon-color-swatch' + (color === pickedIconColor ? ' active' : '');
+          sw.dataset.color = color;
+          sw.style.background = color;
+          if (color === '#fbfbfb') sw.style.border = '1px solid rgba(255,255,255,0.25)';
+          sw.title = color;
+          sw.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            pickedIconColor = color;
+            document.querySelectorAll('.icon-color-swatch').forEach((s) => s.classList.remove('active'));
+            sw.classList.add('active');
+            renderIconGrid();
+          });
+          colorsWrap.appendChild(sw);
+        });
+      }
+
+      const search = document.getElementById('icon-search');
+      if (search && !search.dataset.bound) {
+        search.dataset.bound = '1';
+        search.addEventListener('input', () => {
+          iconPickerSearch = search.value;
+          renderIconGrid();
+        });
+        search.addEventListener('mousedown', (ev) => ev.stopPropagation());
+        search.addEventListener('click', (ev) => ev.stopPropagation());
+      }
+
+      if (!picker.dataset.eventsBound) {
+        picker.dataset.eventsBound = '1';
+        picker.addEventListener('mousedown', (ev) => ev.stopPropagation());
+        picker.addEventListener('click', (ev) => ev.stopPropagation());
+      }
+
+      picker.dataset.inited = '1';
+    }
+
+    renderIconCategories();
+    renderIconGrid();
+  };
+
+  if (getIconLibrary().icons.length) {
+    build();
+  } else {
+    const grid = document.getElementById('icon-grid');
+    if (grid) grid.innerHTML = '<div class="icon-picker-empty">Loading icons…</div>';
+    loadIconLibraryScript(build);
+  }
+}
+
+function initIconPicker() {
+  ensureIconPickerReady();
+}
+
+// ── Patch clearAllSelections to deselect icons
+const _origClearAllForIcon = clearAllSelections;
+clearAllSelections = function() {
+  _origClearAllForIcon();
+  document.querySelectorAll('.icon-obj.selected-icon').forEach(el => {
+    el.classList.remove('selected-icon');
+    el.querySelectorAll('.icon-resize-handle').forEach(h => { h.style.display = 'none'; });
+    const rot = el.querySelector('.icon-rotate-handle');
+    if (rot) rot.style.display = 'none';
+  });
+  selectedIconId = null;
+  hideIconToolbar();
+};
+
+document.addEventListener('keydown', (ev) => {
+  if (!selectedIconId) return;
+  const isEditing = document.activeElement.tagName === 'TEXTAREA'
+    || document.activeElement.tagName === 'INPUT'
+    || document.activeElement.isContentEditable;
+  if (isEditing) return;
+  if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); deleteSelectedIcon(); }
+  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'd') { ev.preventDefault(); duplicateSelectedIcon(); }
+}, true);
+
 // ── Wire select tool to handle image objects
 const _origHandleSelectMousedown = handleSelectMousedown;
 handleSelectMousedown = function(e) {
@@ -4593,6 +5158,13 @@ handleSelectMousedown = function(e) {
   if (imageEl && state.tool === 'select') {
     const id = imageEl.dataset.objId;
     selectImageObj(id, e.ctrlKey || e.metaKey);
+    startObjDrag(e, id);
+    return;
+  }
+  const iconEl = e.target.closest('.icon-obj');
+  if (iconEl && state.tool === 'select') {
+    const id = iconEl.dataset.objId;
+    selectIconObj(id, e.ctrlKey || e.metaKey);
     startObjDrag(e, id);
     return;
   }
@@ -4845,6 +5417,7 @@ function getBoardBounds() {
       const sel = obj.type==='sticky' ? `.sticky-note[data-obj-id="${obj.id}"]`
                 : obj.type==='text'   ? `.canvas-text[data-obj-id="${obj.id}"]`
                 : obj.type==='image'  ? `.image-obj[data-obj-id="${obj.id}"]`
+                : obj.type==='icon'   ? `.icon-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='shape'  ? `.shape-obj[data-obj-id="${obj.id}"]`
                 : null;
       const domEl = sel ? document.querySelector(sel) : null;
@@ -4947,6 +5520,31 @@ async function drawBoardToCanvas(bounds, pad, scale) {
         img.onerror = res;
         img.src = obj.src;
       });
+
+    } else if (obj.type === 'icon') {
+      const def = getIconDef(obj.iconId);
+      if (def) {
+        const svgMarkup = iconDefToSvgMarkup(def, obj.color || '#141414');
+        const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgMarkup);
+        await new Promise(res => {
+          const img = new Image();
+          img.onload = () => {
+            const w = ts(obj.w || 48);
+            const h = ts(obj.h || 48);
+            const px = tx(obj.x) + w / 2;
+            const py = ty(obj.y) + h / 2;
+            const rot = (obj.rotation || 0) * Math.PI / 180;
+            ctx.save();
+            ctx.translate(px, py);
+            if (rot) ctx.rotate(rot);
+            ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            ctx.restore();
+            res();
+          };
+          img.onerror = res;
+          img.src = dataUrl;
+        });
+      }
 
     } else if (obj.type === 'shape') {
       const isLine = obj.shapeType === 'arrow' || obj.shapeType === 'line';
@@ -7100,8 +7698,6 @@ function nextZIndex() { return ++_zCounter; }
 
 // ── Render a sticky DOM element from an object
 function renderStickyFromObj(obj) {
-  bindBoardDom();
-  if (!canvasWorld) return null;
   const colorName = normalizeStickyColorName(obj.color);
   if (obj.color !== colorName) obj.color = colorName;
   const el = document.createElement('div');
@@ -7216,7 +7812,7 @@ function renderStickyFromObj(obj) {
     startStickyResize(ev, el, obj);
   });
 
-  appendToCanvasWorld(el);
+  canvasWorld.appendChild(el);
   return el;
 }
 
@@ -7462,25 +8058,11 @@ window.__LPA_BOARD_VANILLA_LOADED__ = true;
 
 let boardBooted = false;
 
-window.__LPA_BOARD_RELOAD_STATE__ = async function reloadBoardStateFromServer() {
+window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
-  await hydrateInitialBoardState();
-  applyAccessModeUi();
-  updateGridToggleUi();
-  initRealtimeBoardSync();
-  initRealtimePresence();
-  pullLatestBoardStateFromSupabase();
-};
-
-window.__LPA_BOARD_REINIT__ = async function reinitBoardAfterDomRemount() {
-  bindBoardDom();
-  bindUiDom();
-  ensureCanvasReady();
-  await hydrateInitialBoardState();
   restoreCanvasIfDomWasCleared();
   applyTransform();
-  scheduleBoardRedraw();
   applyAccessModeUi();
   updateGridToggleUi();
   initRealtimeBoardSync();
@@ -7488,36 +8070,19 @@ window.__LPA_BOARD_REINIT__ = async function reinitBoardAfterDomRemount() {
   initActivityPanel();
   pullLatestBoardStateFromSupabase();
   if (activityPanelOpen) renderActivityPanel();
+  ensureIconPickerReady();
+  initIconToolbar();
 };
 
-window.__LPA_BOARD_ATTEMPT_BOOT__ = function attemptBoardBoot() {
-  if (!window.__LPA_BOARD_SHELL_MOUNTED__) return;
-  if (!document.querySelector('.board-shell #canvas-world')) return;
-  window.__LPA_BOARD_BOOT__?.();
-};
-
-window.__LPA_BOARD_BOOT__ = async function bootBoard() {
+window.__LPA_BOARD_BOOT__ = function bootBoard() {
   bindBoardDom();
   bindUiDom();
   ensureCanvasEvents();
-  ensureCanvasReady();
   if (!boardBooted) {
     boardBooted = true;
-    await init();
+    init();
     return;
   }
-  await window.__LPA_BOARD_REINIT__();
+  window.__LPA_BOARD_REINIT__();
 };
-
-window.__LPA_BOARD_DEBUG__ = () => ({
-  boardId: getLiveBoardAccess().boardId,
-  objectCount: state.objects.length,
-  domChildCount: canvasWorld?.childElementCount ?? 0,
-  canvasConnected: !!(canvasRoot?.isConnected && canvasWorld?.isConnected),
-  zoom: state.zoom,
-  panX: state.panX,
-  panY: state.panY,
-});
-
-window.__LPA_BOARD_ATTEMPT_BOOT__();
 

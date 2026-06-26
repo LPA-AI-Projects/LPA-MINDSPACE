@@ -58,47 +58,9 @@ body{
 /* ══════════════════════════════════════
    CANVAS LAYER
 ══════════════════════════════════════ */
-.board-shell{
-  position:fixed;
-  inset:0;
-  z-index:0;
-  width:100%;
-  height:100%;
-  overflow:hidden;
-  pointer-events:none;
-}
-
-.board-shell #canvas-root,
-.board-shell #topbar,
-.board-shell #toolbar,
-.board-shell #shape-picker,
-.board-shell #pen-toolbar,
-.board-shell #text-toolbar,
-.board-shell #shape-toolbar,
-.board-shell #image-toolbar,
-.board-shell #ai-bar,
-.board-shell #statusbar,
-.board-shell #minimap-wrap,
-.board-shell #more-menu,
-.board-shell #share-panel,
-.board-shell #activity-panel,
-.board-shell #shortcuts-overlay,
-.board-shell #about-panel,
-.board-shell #export-menu,
-.board-shell #toast,
-.board-shell #ctx-menu,
-.board-shell #sel-toolbar,
-.board-shell #sel-ai-popup,
-.board-shell #sticky-color-picker,
-.board-shell #panel-backdrop,
-.board-shell #drop-overlay{
-  pointer-events:auto;
-}
-
 #canvas-root{
   position:fixed;
   inset:0;
-  z-index:0;
   overflow:hidden;
   cursor:default;
   pointer-events:all;
@@ -590,8 +552,10 @@ body.read-only-mode #shape-picker,
 body.read-only-mode #sel-toolbar,
 body.read-only-mode #shape-toolbar,
 body.read-only-mode #image-toolbar,
+body.read-only-mode #icon-toolbar,
 body.read-only-mode #text-toolbar,
 body.read-only-mode #pen-toolbar,
+body.read-only-mode #icon-picker,
 body.read-only-mode #ai-bar{
   display:none !important;
 }
@@ -840,6 +804,7 @@ body.tool-pen #canvas-root{cursor:crosshair}
 body.tool-text #canvas-root{cursor:text}
 body.tool-shape #canvas-root{cursor:crosshair}
 body.tool-sticky #canvas-root{cursor:cell}
+body.tool-icon #canvas-root{cursor:copy}
 body.tool-eraser #canvas-root{cursor:none}
 
 /* ══════════════════════════════════════
@@ -1932,6 +1897,275 @@ body.tool-eraser #eraser-cursor{display:block}
 /* ══════════════════════════════════════
    PEN TOOLBAR
 ══════════════════════════════════════ */
+/* icon picker panel */
+#icon-picker {
+  position: fixed;
+  left: var(--tool-panel-left);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 280px;
+  max-height: min(72vh, 560px);
+  background: #141414;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 14px;
+  padding: 10px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 400;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  overflow: hidden;
+}
+#icon-picker.visible { display: flex; }
+.icon-picker-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.icon-picker-title {
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(251,251,251,0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.icon-picker-search {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: #fbfbfb;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 12px;
+  outline: none;
+}
+.icon-picker-search::placeholder { color: rgba(251,251,251,0.35); }
+.icon-picker-search:focus { border-color: rgba(46,157,145,0.5); }
+.icon-picker-colors {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.icon-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform .12s, border-color .12s;
+}
+.icon-color-swatch:hover { transform: scale(1.1); }
+.icon-color-swatch.active { border-color: #fbfbfb; }
+.icon-color-swatch[data-color="#141414"],
+.icon-color-swatch[data-color="#000000"] {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45);
+}
+.icb-color-swatch[data-color="#141414"],
+.icb-color-swatch[data-color="#fbfbfb"] {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
+}
+.icb-color-swatch[data-color="#fbfbfb"] {
+  box-shadow: inset 0 0 0 1px rgba(20,20,20,0.2);
+}
+.icon-picker-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+  max-height: 72px;
+  overflow-y: auto;
+}
+.icon-cat-btn {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(251,251,251,0.55);
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all .12s;
+}
+.icon-cat-btn:hover { background: rgba(255,255,255,0.08); color: #fbfbfb; }
+.icon-cat-btn.active {
+  background: rgba(46,157,145,0.22);
+  border-color: rgba(46,157,145,0.45);
+  color: #2e9d91;
+}
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 2px;
+}
+.icon-picker-grid[data-tile-bg="light"] .icon-pick-btn {
+  background: rgba(255,255,255,0.92);
+  border-color: rgba(255,255,255,0.08);
+}
+.icon-picker-grid[data-tile-bg="light"] .icon-pick-btn:hover,
+.icon-picker-grid[data-tile-bg="light"] .icon-pick-btn.active {
+  background: #fbfbfb;
+}
+.icon-picker-grid[data-tile-bg="dark"] .icon-pick-btn {
+  background: rgba(38,38,38,0.96);
+  border-color: rgba(255,255,255,0.12);
+}
+.icon-picker-grid[data-tile-bg="dark"] .icon-pick-btn:hover {
+  background: rgba(52,52,52,0.98);
+  border-color: rgba(255,255,255,0.18);
+}
+.icon-picker-grid[data-tile-bg="dark"] .icon-pick-btn.active {
+  background: rgba(52,52,52,0.98);
+  border-color: #2e9d91;
+  box-shadow: inset 0 0 0 1.5px #2e9d91;
+}
+.icon-pick-btn {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.9);
+  color: #141414;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  transition: background .12s, box-shadow .12s, border-color .12s;
+}
+.icon-pick-btn:hover {
+  background: #fbfbfb;
+  border-color: rgba(255,255,255,0.2);
+}
+.icon-pick-btn.active {
+  background: #fbfbfb;
+  border-color: #2e9d91;
+  box-shadow: inset 0 0 0 1.5px #2e9d91;
+}
+.icon-pick-btn svg { width: 100%; height: 100%; pointer-events: none; }
+.icon-picker-empty {
+  grid-column: 1 / -1;
+  padding: 16px 8px;
+  text-align: center;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 11px;
+  color: rgba(251,251,251,0.45);
+}
+
+/* icon objects on canvas */
+.icon-obj {
+  position: absolute;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: box-shadow .12s;
+  overflow: visible;
+}
+.icon-obj.selected-icon {
+  box-shadow: 0 0 0 2px #2e9d91;
+  border-radius: 6px;
+}
+.icon-obj-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  pointer-events: none;
+  border-radius: 8px;
+}
+.icon-obj-inner[data-contrast="dark"] {
+  background: rgba(255,255,255,0.88);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  padding: 10%;
+  box-sizing: border-box;
+}
+.icon-obj-inner[data-contrast="light"] {
+  background: rgba(32,32,32,0.84);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+  padding: 10%;
+  box-sizing: border-box;
+}
+.icon-obj svg {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.icon-resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--white);
+  border: 2px solid #2e9d91;
+  border-radius: 2px;
+  z-index: 160;
+  pointer-events: all;
+  display: none;
+}
+.icon-rotate-handle {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 14px;
+  height: 14px;
+  background: var(--white);
+  border: 2px solid #2e9d91;
+  border-radius: 50%;
+  z-index: 161;
+  pointer-events: all;
+  display: none;
+  cursor: grab;
+}
+.icon-rotate-handle:active { cursor: grabbing; }
+.icon-rotate-stem {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  width: 2px;
+  height: 14px;
+  background: #2e9d91;
+  transform: translateX(-50%);
+  pointer-events: none;
+  display: none;
+  z-index: 160;
+}
+.icon-obj.selected-icon .icon-rotate-stem { display: block; }
+
+/* icon toolbar — reuse image toolbar styles */
+#icon-toolbar {
+  position: fixed;
+  background: #141414;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 12px;
+  padding: 6px 8px;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  z-index: 400;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+#icon-toolbar.visible { display: flex; }
+.icb-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.icb-color-swatch.active { border-color: #fbfbfb; }
+
 #pen-toolbar {
   position: fixed;
   left: var(--tool-panel-left);

@@ -5,18 +5,6 @@ import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
 
 const EDIT_ROLES = new Set(['facilitator', 'participant']);
 
-function normalizeBoardState(state) {
-  if (!state) return {};
-  if (typeof state === 'string') {
-    try {
-      return JSON.parse(state);
-    } catch {
-      return {};
-    }
-  }
-  return state;
-}
-
 function getDisplayName(user) {
   if (!user) return 'Guest';
   const fromMeta = user.user_metadata?.full_name || user.user_metadata?.name;
@@ -181,6 +169,7 @@ async function loadSessionScopedBoardWithRetry(sessionId, userId, attempts = 4) 
 
 export default function Board({ session }) {
   const [boardLoaded, setBoardLoaded] = useState(false);
+  const [shellReady, setShellReady] = useState(false);
   const [loadError, setLoadError] = useState('');
   const boardMountRef = useRef(null);
   const hasLoadedOnceRef = useRef(false);
@@ -286,8 +275,7 @@ export default function Board({ session }) {
           }
         }
 
-        window.__LPA_BOARD_STATE_OBJECT__ = normalizeBoardState(boardRecord.state);
-        window.supabaseInitialState = JSON.stringify(window.__LPA_BOARD_STATE_OBJECT__);
+        window.supabaseInitialState = JSON.stringify(boardRecord.state || {});
       }
 
       window.supabaseClient = supabase;
@@ -319,12 +307,8 @@ export default function Board({ session }) {
       };
 
       if (cancelled) return;
-      const wasAlreadyLoaded = hasLoadedOnceRef.current;
       hasLoadedOnceRef.current = true;
       setBoardLoaded(true);
-      if (wasAlreadyLoaded && window.__LPA_BOARD_RELOAD_STATE__) {
-        queueMicrotask(() => window.__LPA_BOARD_RELOAD_STATE__());
-      }
     };
 
     loadSession();
@@ -351,32 +335,80 @@ export default function Board({ session }) {
     return () => window.removeEventListener('storage', onStorage);
   }, [boardLoaded]);
 
+  // Inject board HTML synchronously before paint so canvas exists before board_vanilla boots.
   useLayoutEffect(() => {
     if (!boardLoaded || !boardMountRef.current) return;
     if (!boardMountRef.current.querySelector('#canvas-world')) {
       boardMountRef.current.innerHTML = boardHtml;
     }
-    window.__LPA_BOARD_SHELL_MOUNTED__ = true;
-    window.__LPA_BOARD_ATTEMPT_BOOT__?.();
+    setShellReady(true);
   }, [boardLoaded]);
 
   useEffect(() => {
-    if (!boardLoaded) {
-      window.__LPA_BOARD_SHELL_MOUNTED__ = false;
-      return undefined;
-    }
-    if (window.__LPA_BOARD_VANILLA_LOADED__) return undefined;
-    if (document.querySelector('script[data-lpa-board-vanilla]')) return undefined;
+    if (!shellReady) return undefined;
 
-    const script = document.createElement('script');
-    script.setAttribute('data-lpa-board-vanilla', '1');
     const buildId = import.meta.env.VITE_BUILD_ID || (import.meta.env.DEV ? 'dev' : '');
-    script.src = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
-    script.onload = () => window.__LPA_BOARD_ATTEMPT_BOOT__?.();
-    document.body.appendChild(script);
+    const iconsSrc = buildId ? `/board-icons.js?v=${buildId}` : '/board-icons.js';
+    const vanillaSrc = buildId ? `/board_vanilla.js?v=${buildId}` : '/board_vanilla.js';
 
+    const bootVanilla = () => {
+      window.__LPA_BOARD_BOOT__?.();
+    };
+
+    const loadVanillaScript = () => {
+      if (window.__LPA_BOARD_VANILLA_LOADED__) {
+        bootVanilla();
+        return;
+      }
+      if (document.querySelector('script[data-lpa-board-vanilla]')) return;
+
+      const script = document.createElement('script');
+      script.setAttribute('data-lpa-board-vanilla', '1');
+      script.src = vanillaSrc;
+      script.onload = bootVanilla;
+      document.body.appendChild(script);
+    };
+
+    const iconsReady = () =>
+      window.__LPA_BOARD_ICONS_LOADED__ && window.BOARD_ICON_LIBRARY?.icons?.length;
+
+    const loadIconsThenVanilla = () => {
+      if (iconsReady()) {
+        loadVanillaScript();
+        return;
+      }
+
+      const existing = document.querySelector('script[data-lpa-board-icons]');
+      if (existing) {
+        const onIconsReady = () => {
+          window.__LPA_BOARD_ICONS_LOADED__ = true;
+          loadVanillaScript();
+        };
+        if (iconsReady()) {
+          onIconsReady();
+        } else {
+          existing.addEventListener('load', onIconsReady, { once: true });
+        }
+        return;
+      }
+
+      const iconsScript = document.createElement('script');
+      iconsScript.setAttribute('data-lpa-board-icons', '1');
+      iconsScript.src = iconsSrc;
+      iconsScript.onload = () => {
+        window.__LPA_BOARD_ICONS_LOADED__ = true;
+        loadVanillaScript();
+      };
+      iconsScript.onerror = () => {
+        console.warn('board-icons.js failed to load — icon tool will be empty');
+        loadVanillaScript();
+      };
+      document.body.appendChild(iconsScript);
+    };
+
+    loadIconsThenVanilla();
     return undefined;
-  }, [boardLoaded]);
+  }, [shellReady]);
 
   if (loadError) {
     return (

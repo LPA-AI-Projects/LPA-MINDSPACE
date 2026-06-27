@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
+import './index.css';
 import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
 
 const EDIT_ROLES = new Set(['facilitator', 'participant']);
@@ -340,6 +341,9 @@ export default function Board({ session }) {
     if (!boardLoaded || !boardMountRef.current) return;
     if (!boardMountRef.current.querySelector('#canvas-world')) {
       boardMountRef.current.innerHTML = boardHtml;
+    }
+    if (window.__LPA_BOARD_VANILLA_LOADED__) {
+      window.__LPA_BOARD_REINIT__?.();
     }
     setShellReady(true);
   }, [boardLoaded]);

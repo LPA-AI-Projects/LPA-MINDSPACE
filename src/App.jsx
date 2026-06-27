@@ -99,13 +99,7 @@ function App() {
           <div className="auth-hero-glow auth-hero-glow--orange" />
           <div className="auth-hero-content">
             <div className="auth-hero-logo">
-              <div className="auth-hero-logo-mark">
-                <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 13L8 3L13 13" stroke="#fbfbfb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M5 9.5h6" stroke="#fbfbfb" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </div>
-              <span className="auth-hero-brand">LP <em>MindSpace</em></span>
+              <div className="lp-brand-logo lp-brand-logo--hero" role="img" aria-label="Learners Point" />
             </div>
             <h1 className="auth-hero-title">Collaborative training boards for modern teams</h1>
             <p className="auth-hero-desc">

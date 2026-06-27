@@ -75,8 +75,16 @@ function bindUiDom() {
   selRect = document.getElementById('sel-rect');
 }
 
-let lastPinchDist = null;
+let lastPinchCenter = null;
 let canvasEventsReady = false;
+
+function panViewportByPixels(dx, dy) {
+  state.panX -= dx;
+  state.panY -= dy;
+  applyTransform();
+  breakFollowOnUserViewportChange();
+  scheduleViewportPresencePublish();
+}
 
 function ensureCanvasEvents() {
   if (canvasEventsReady) return;
@@ -104,27 +112,32 @@ function ensureCanvasEvents() {
   document.addEventListener('wheel', (e) => {
     if (!isEventOnCanvas(e)) return;
     e.preventDefault();
-    const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
-    zoomTo(state.zoom * factor, e.clientX, e.clientY);
+
+    // Pinch-to-zoom on trackpad (Ctrl/Cmd + two-finger scroll)
+    if (e.ctrlKey || e.metaKey) {
+      const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
+      zoomTo(state.zoom * factor, e.clientX, e.clientY);
+      return;
+    }
+
+    // Two-finger scroll pans the board
+    panViewportByPixels(e.deltaX, e.deltaY);
   }, { capture: true, passive: false });
 
   document.addEventListener('touchmove', (e) => {
     if (!isEventOnCanvas(e)) return;
     if (e.touches.length === 2) {
       e.preventDefault();
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (lastPinchDist) {
-        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        zoomTo(state.zoom * dist / lastPinchDist, cx, cy);
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      if (lastPinchCenter) {
+        panViewportByPixels(lastPinchCenter.x - cx, lastPinchCenter.y - cy);
       }
-      lastPinchDist = dist;
+      lastPinchCenter = { x: cx, y: cy };
     }
   }, { capture: true, passive: false });
 
-  document.addEventListener('touchend', () => { lastPinchDist = null; }, true);
+  document.addEventListener('touchend', () => { lastPinchCenter = null; }, true);
 }
 
 bindBoardDom();
@@ -540,7 +553,7 @@ function worldToScreen(wx, wy) {
 // TOOL SYSTEM
 // ═══════════════════════════════════════════════════
 const TOOL_HINTS = {
-  hand:   'Drag to pan · Scroll to zoom',
+  hand:   'Drag to pan · Scroll to move the board',
   select: 'Click to select · Drag to box-select',
   pen:    'Click and drag to draw freely',
   text:   'Click anywhere to add text',
@@ -855,7 +868,11 @@ function placeText(e) {
     fontSize:   currentTextStyle.fontSize,
     fontWeight: currentTextStyle.fontWeight,
     fontStyle:  currentTextStyle.fontStyle,
+    fontFamily: currentTextStyle.fontFamily,
+    textAlign:  currentTextStyle.textAlign,
+    textDecoration: currentTextStyle.textDecoration,
     color:      currentTextStyle.color,
+    highlight:  currentTextStyle.highlight,
     w: null, h: null, // auto-size until resized
   });
 
@@ -1352,16 +1369,22 @@ function addTextToCanvas(obj) {
 
   // apply size — if w/h stored use them, else auto
   const hasSize = obj.w && obj.h;
+  const fontFamily = obj.fontFamily || "'Bricolage Grotesque',sans-serif";
+  const textAlign = obj.textAlign || 'left';
+  const textDecoration = obj.textDecoration || 'none';
+  const highlight = obj.highlight && obj.highlight !== 'transparent' ? obj.highlight : 'transparent';
   wrap.style.cssText = `
     position:absolute;
     left:${obj.x}px; top:${obj.y}px;
     ${hasSize ? `width:${obj.w}px;height:${obj.h}px;` : 'min-width:120px;min-height:28px;'}
-    font-family:'Bricolage Grotesque',sans-serif;
+    font-family:${fontFamily};
     font-size:${obj.fontSize||18}px;
     font-weight:${obj.fontWeight||'500'};
     font-style:${obj.fontStyle||'normal'};
+    text-align:${textAlign};
+    text-decoration:${textDecoration};
     color:${obj.color||'#141414'};
-    background:transparent;
+    background:${highlight};
     border:1.5px solid transparent;
     outline:none; overflow:hidden;
     padding:3px 6px; cursor:text; z-index:10;
@@ -1371,7 +1394,7 @@ function addTextToCanvas(obj) {
   // inner editable — not editable until double-clicked
   const editable = document.createElement('div');
   editable.contentEditable = 'false';
-  editable.style.cssText = 'outline:none;width:100%;height:100%;min-height:1em;word-break:break-word;white-space:pre-wrap;pointer-events:none;';
+  editable.style.cssText = `outline:none;width:100%;height:100%;min-height:1em;word-break:break-word;white-space:pre-wrap;pointer-events:none;text-align:${textAlign};`;
   editable.textContent = obj.content || '';
   wrap.appendChild(editable);
 
@@ -2190,7 +2213,7 @@ function init() {
   initRealtimePresence();
   initRealtimeBoardSync();
   initActivityPanel();
-  showHint('Welcome to LP MindSpace — drag to pan · scroll to zoom · press ? for shortcuts');
+  showHint('Welcome to LP MindSpace — scroll to pan · Ctrl+scroll to zoom · press ? for shortcuts');
 }
 
 /** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
@@ -5173,11 +5196,29 @@ handleSelectMousedown = function(e) {
 
 
 // ═══════════════════════════════════════════════════
-// TEXT TOOLBAR — font size, bold, italic, color
+// TEXT TOOLBAR — font, size, style, alignment, color, highlight
 // ═══════════════════════════════════════════════════
 
 const TEXT_COLORS = [
   '#141414', '#fbfbfb', '#2e9d91', '#4f71f2', '#f2541d',
+];
+
+const TEXT_FONTS = [
+  { label: 'Bricolage', value: "'Bricolage Grotesque', sans-serif" },
+  { label: 'Mono', value: "'JetBrains Mono', monospace" },
+  { label: 'Arial', value: 'Arial, sans-serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Times', value: "'Times New Roman', serif" },
+  { label: 'Courier', value: "'Courier New', monospace" },
+];
+
+const TEXT_HIGHLIGHTS = [
+  { color: 'transparent', label: 'None' },
+  { color: '#fff176', label: 'Yellow' },
+  { color: '#a5d6a7', label: 'Green' },
+  { color: '#90caf9', label: 'Blue' },
+  { color: '#f48fb1', label: 'Pink' },
+  { color: '#ffcc80', label: 'Orange' },
 ];
 
 // current style applied to new text nodes
@@ -5185,28 +5226,92 @@ const currentTextStyle = {
   fontSize: 18,
   fontWeight: '500',
   fontStyle: 'normal',
+  fontFamily: "'Bricolage Grotesque', sans-serif",
+  textAlign: 'left',
+  textDecoration: 'none',
   color: '#141414',
+  highlight: 'transparent',
 };
 
 let selectedTextId = null;
 
-function initTextToolbar() {
-  const wrap = document.getElementById('ttb-colors');
-  if (!wrap) return;
-  if (wrap.dataset.toolbarInited === '1') return;
-  wrap.dataset.toolbarInited = '1';
-  TEXT_COLORS.forEach(c => {
-    const s = document.createElement('div');
-    s.className = 'ttb-color-swatch';
-    s.style.background = c;
-    if (c === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
-    s.title = c;
-    s.addEventListener('mousedown', ev => {
-      ev.preventDefault(); ev.stopPropagation();
-      setTextColor(c);
-    });
-    wrap.appendChild(s);
+function normalizeTextHighlight(value) {
+  if (!value || value === 'transparent' || value === 'none') return 'transparent';
+  return value;
+}
+
+function syncTextAlignButtons(align) {
+  ['left', 'center', 'right'].forEach((mode) => {
+    document.getElementById(`ttb-align-${mode}`)?.classList.toggle('active', align === mode);
   });
+}
+
+function syncTextToolbarFromObj(obj) {
+  if (!obj) return;
+  const fontSelect = document.getElementById('ttb-font');
+  if (fontSelect) {
+    fontSelect.value = obj.fontFamily || currentTextStyle.fontFamily;
+  }
+  document.getElementById('ttb-size-val').value = obj.fontSize || 18;
+  document.getElementById('ttb-bold').classList.toggle('active', obj.fontWeight === 'bold' || obj.fontWeight === '700');
+  document.getElementById('ttb-italic').classList.toggle('active', obj.fontStyle === 'italic');
+  document.getElementById('ttb-underline')?.classList.toggle('active', obj.textDecoration === 'underline');
+  syncTextAlignButtons(obj.textAlign || 'left');
+  document.querySelectorAll('.ttb-color-swatch').forEach(s => {
+    s.classList.toggle('active', s.title === obj.color);
+  });
+  const highlight = normalizeTextHighlight(obj.highlight);
+  document.querySelectorAll('.ttb-highlight-swatch').forEach(s => {
+    s.classList.toggle('active', s.title === highlight);
+  });
+}
+
+function initTextToolbar() {
+  const fontSelect = document.getElementById('ttb-font');
+  if (fontSelect && fontSelect.dataset.toolbarInited !== '1') {
+    fontSelect.dataset.toolbarInited = '1';
+    TEXT_FONTS.forEach(({ label, value }) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      fontSelect.appendChild(opt);
+    });
+    fontSelect.value = currentTextStyle.fontFamily;
+  }
+
+  const wrap = document.getElementById('ttb-colors');
+  if (wrap && wrap.dataset.toolbarInited !== '1') {
+    wrap.dataset.toolbarInited = '1';
+    TEXT_COLORS.forEach(c => {
+      const s = document.createElement('div');
+      s.className = 'ttb-color-swatch';
+      s.style.background = c;
+      if (c === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
+      s.title = c;
+      s.addEventListener('mousedown', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        setTextColor(c);
+      });
+      wrap.appendChild(s);
+    });
+  }
+
+  const hiWrap = document.getElementById('ttb-highlights');
+  if (hiWrap && hiWrap.dataset.toolbarInited !== '1') {
+    hiWrap.dataset.toolbarInited = '1';
+    TEXT_HIGHLIGHTS.forEach(({ color, label }) => {
+      const s = document.createElement('div');
+      s.className = 'ttb-highlight-swatch' + (color === 'transparent' ? ' ttb-highlight-swatch--none' : '');
+      if (color !== 'transparent') s.style.background = color;
+      s.title = color;
+      s.setAttribute('aria-label', label);
+      s.addEventListener('mousedown', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        setTextHighlight(color);
+      });
+      hiWrap.appendChild(s);
+    });
+  }
 }
 
 // ── Show toolbar above/below a text element
@@ -5218,16 +5323,7 @@ function showTextToolbar(el) {
 
   // sync controls to current obj
   const obj = state.objects.find(o => o.id === el.dataset.objId);
-  if (obj) {
-    document.getElementById('ttb-size-val').value = obj.fontSize || 18;
-    document.getElementById('ttb-bold').classList.toggle('active', obj.fontWeight === 'bold' || obj.fontWeight === '700');
-    document.getElementById('ttb-italic').classList.toggle('active', obj.fontStyle === 'italic');
-    // color swatches
-    document.querySelectorAll('.ttb-color-swatch').forEach(s => {
-      s.classList.toggle('active', s.style.background === obj.color ||
-        s.title === obj.color);
-    });
-  }
+  if (obj) syncTextToolbarFromObj(obj);
 
   requestAnimationFrame(() => {
     positionFloatingPanel(tb, {
@@ -5255,13 +5351,18 @@ function applyTextStyle(prop, value) {
   if (!selectedTextId) return;
   const obj = state.objects.find(o => o.id === selectedTextId);
   const el  = document.querySelector(`.canvas-text[data-obj-id="${selectedTextId}"]`);
+  const editable = el?.querySelector('div');
   if (!obj || !el || !guardEditObject(obj)) return;
+  if (prop === 'highlight') value = normalizeTextHighlight(value);
   obj[prop] = value;
-  // apply to wrapper (font props cascade to inner editable)
-  if (prop === 'fontSize')   { el.style.fontSize   = value + 'px'; }
-  if (prop === 'fontWeight') { el.style.fontWeight  = value; }
-  if (prop === 'fontStyle')  { el.style.fontStyle   = value; }
-  if (prop === 'color')      { el.style.color        = value; }
+  if (prop === 'fontSize')        { el.style.fontSize = value + 'px'; }
+  if (prop === 'fontWeight')      { el.style.fontWeight = value; }
+  if (prop === 'fontStyle')       { el.style.fontStyle = value; }
+  if (prop === 'fontFamily')      { el.style.fontFamily = value; }
+  if (prop === 'textAlign')       { el.style.textAlign = value; if (editable) editable.style.textAlign = value; }
+  if (prop === 'textDecoration')  { el.style.textDecoration = value; }
+  if (prop === 'color')           { el.style.color = value; }
+  if (prop === 'highlight')       { el.style.background = value; }
   currentTextStyle[prop] = value;
   History.push(); saveToStorage();
 }
@@ -5299,6 +5400,32 @@ function toggleTextItalic() {
   const isItalic = obj.fontStyle === 'italic';
   applyTextStyle('fontStyle', isItalic ? 'normal' : 'italic');
   document.getElementById('ttb-italic').classList.toggle('active', !isItalic);
+}
+
+function toggleTextUnderline() {
+  if (!selectedTextId) return;
+  const obj = state.objects.find(o => o.id === selectedTextId);
+  if (!obj) return;
+  const isUnderline = obj.textDecoration === 'underline';
+  applyTextStyle('textDecoration', isUnderline ? 'none' : 'underline');
+  document.getElementById('ttb-underline')?.classList.toggle('active', !isUnderline);
+}
+
+function setTextFont(fontFamily) {
+  applyTextStyle('fontFamily', fontFamily);
+}
+
+function setTextAlign(align) {
+  applyTextStyle('textAlign', align);
+  syncTextAlignButtons(align);
+}
+
+function setTextHighlight(color) {
+  const highlight = normalizeTextHighlight(color);
+  applyTextStyle('highlight', highlight);
+  document.querySelectorAll('.ttb-highlight-swatch').forEach(s => {
+    s.classList.toggle('active', s.title === highlight);
+  });
 }
 
 function setTextColor(color) {
@@ -5481,14 +5608,48 @@ async function drawBoardToCanvas(bounds, pad, scale) {
       ctx.stroke();
 
     } else if (obj.type === 'text') {
-      ctx.font = `${obj.fontStyle||'normal'} ${obj.fontWeight||500} ${ts(obj.fontSize||18)}px 'Bricolage Grotesque', sans-serif`;
+      const fontFamily = obj.fontFamily || "'Bricolage Grotesque', sans-serif";
+      const fontSize = ts(obj.fontSize || 18);
+      const padX = ts(6);
+      const padY = ts(3);
+      const align = obj.textAlign || 'left';
+      const boxW = obj.w ? ts(obj.w) : ts(Math.max(120, (obj.content || '').length * (obj.fontSize || 18) * 0.55));
+      const lines = (obj.content || '').split('\n');
+      const lineH = ts((obj.fontSize || 18) * 1.5);
+      const blockH = lines.length * lineH + padY * 2;
+      const highlight = normalizeTextHighlight(obj.highlight);
+
+      if (highlight !== 'transparent') {
+        ctx.fillStyle = highlight;
+        ctx.fillRect(tx(obj.x), ty(obj.y), boxW, blockH);
+      }
+
+      ctx.font = `${obj.fontStyle || 'normal'} ${obj.fontWeight || 500} ${fontSize}px ${fontFamily}`;
       ctx.fillStyle = obj.color || '#141414';
       ctx.textBaseline = 'top';
-      const lines = (obj.content||'').split('\n');
-      const lineH = ts((obj.fontSize||18) * 1.5);
+      ctx.textAlign = align;
+
       lines.forEach((line, i) => {
-        ctx.fillText(line, tx(obj.x) + ts(6), ty(obj.y) + ts(3) + i * lineH);
+        let x = tx(obj.x) + padX;
+        if (align === 'center') x = tx(obj.x) + boxW / 2;
+        else if (align === 'right') x = tx(obj.x) + boxW - padX;
+        const y = ty(obj.y) + padY + i * lineH;
+        ctx.fillText(line, x, y);
+        if (obj.textDecoration === 'underline' && line) {
+          const metrics = ctx.measureText(line);
+          const lineWidth = metrics.width;
+          let ux = x;
+          if (align === 'center') ux = x - lineWidth / 2;
+          else if (align === 'right') ux = x - lineWidth;
+          ctx.beginPath();
+          ctx.moveTo(ux, y + fontSize + ts(1));
+          ctx.lineTo(ux + lineWidth, y + fontSize + ts(1));
+          ctx.lineWidth = Math.max(1, ts(1));
+          ctx.strokeStyle = obj.color || '#141414';
+          ctx.stroke();
+        }
       });
+      ctx.textAlign = 'left';
 
     } else if (obj.type === 'sticky') {
       const x=tx(obj.x), y=ty(obj.y), w=ts(obj.w||220), h=ts(obj.h||180);
@@ -6078,10 +6239,25 @@ function drawMinimap() {
       mmCtx.fill();
 
     } else if (obj.type === 'text') {
+      const highlight = normalizeTextHighlight(obj.highlight);
+      const boxW = obj.w || Math.max(120, (obj.content || '').length * (obj.fontSize || 18) * 0.55);
+      const lineCount = Math.max(1, (obj.content || '').split('\n').length);
+      const boxH = obj.h || lineCount * (obj.fontSize || 18) * 1.5 + 6;
+      if (highlight !== 'transparent') {
+        mmCtx.fillStyle = highlight;
+        mmCtx.fillRect(wx(obj.x), wy(obj.y), ws(boxW), ws(boxH));
+      }
       mmCtx.fillStyle = obj.color || '#141414';
-      mmCtx.font = `${ws(obj.fontSize||18)*0.7}px sans-serif`;
+      mmCtx.font = `${ws(obj.fontSize || 18) * 0.7}px sans-serif`;
       mmCtx.textBaseline = 'top';
-      mmCtx.fillText(obj.content||'', wx(obj.x), wy(obj.y), ws(180));
+      mmCtx.textAlign = obj.textAlign || 'left';
+      const textX = (obj.textAlign === 'center')
+        ? wx(obj.x) + ws(boxW) / 2
+        : (obj.textAlign === 'right')
+          ? wx(obj.x) + ws(boxW) - ws(6)
+          : wx(obj.x) + ws(6);
+      mmCtx.fillText(obj.content || '', textX, wy(obj.y) + ws(3), ws(boxW - 12));
+      mmCtx.textAlign = 'left';
 
     } else if (obj.type === 'image') {
       // draw image placeholder rect
@@ -7287,7 +7463,11 @@ async function renderAiObjects(objects) {
         fontSize: obj.fontSize || 18,
         fontWeight: obj.fontWeight || '500',
         fontStyle: obj.fontStyle || 'normal',
+        fontFamily: obj.fontFamily || "'Bricolage Grotesque', sans-serif",
+        textAlign: obj.textAlign || 'left',
+        textDecoration: obj.textDecoration || 'none',
         color: obj.color || '#141414',
+        highlight: normalizeTextHighlight(obj.highlight),
       });
       state.objects.push(tObj);
       addTextToCanvas(tObj);

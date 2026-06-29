@@ -13,7 +13,6 @@ const state = {
   history: [],
   historyIdx: -1,
   isPanning: false,
-  isSpaceDown: false,
   prevTool: 'hand',
   mouseX: 0,
   mouseY: 0,
@@ -158,11 +157,13 @@ function bindCanvasPointerEvents() {
 
   canvasRoot.addEventListener('contextmenu', (e) => {
     e.preventDefault();
+    hideShortcutsIfOpen();
     showContextMenu(e);
   }, cap);
 
   canvasRoot.addEventListener('wheel', (e) => {
     e.preventDefault();
+    hideShortcutsIfOpen();
     if (e.ctrlKey || e.metaKey) {
       const factor = e.deltaY > 0 ? 1 / (1 + ZOOM_STEP) : (1 + ZOOM_STEP);
       zoomTo(state.zoom * factor, e.clientX, e.clientY);
@@ -693,10 +694,11 @@ function handleCanvasPointerDown(e) {
   if (e.button !== 0) return;
   if (typeof e.isPrimary === 'boolean' && !e.isPrimary) return;
   e.preventDefault();
+  hideShortcutsIfOpen();
 
   const tool = state.tool;
 
-  if (tool === 'hand' || state.isSpaceDown) {
+  if (tool === 'hand') {
     startPan(e);
     return;
   }
@@ -948,11 +950,9 @@ function placeText(e) {
   wrap.style.border = '1.5px dashed rgba(79,113,242,0.5)';
 
   // enable editing immediately for new text
-  const editable = wrap.querySelector('div');
+  const editable = getTextEditable(wrap);
   if (editable) {
-    editable.contentEditable = 'true';
-    editable.style.pointerEvents = '';
-    editable.focus();
+    beginTextEditing(wrap, obj);
     // remove empty node on blur if no text was typed
     const onFirstBlur = () => {
       if (!obj.content.trim()) {
@@ -961,12 +961,7 @@ function placeText(e) {
         updateObjectCount();
         return;
       }
-      // save size
-      obj.w = wrap.offsetWidth;
-      obj.h = wrap.offsetHeight;
       wrap.style.border = '1.5px solid transparent';
-      History.push();
-      saveToStorage();
       editable.removeEventListener('blur', onFirstBlur);
     };
     editable.addEventListener('blur', onFirstBlur);
@@ -1165,25 +1160,29 @@ function endErase() {
 // ═══════════════════════════════════════════════════
 // KEYBOARD SHORTCUTS
 // ═══════════════════════════════════════════════════
-const KEY_TOOLS = { h:'hand', v:'select', p:'pen', t:'text', e:'eraser', s:'sticky', r:'shape', i:'image', o:'icon' };
+function isBoardTypingContext(el) {
+  if (!el || !(el instanceof Element)) return false;
+  if (el.matches('input, textarea, select, [contenteditable="true"]')) return true;
+  if (el.isContentEditable) return true;
+  return !!el.closest(
+    '#ai-bar, #sel-ai-popup, #share-dialog, #activity-panel, #shortcuts-overlay, ' +
+    '#board-info-panel, #about-panel, .canvas-text.is-editing, .shape-label.editable'
+  );
+}
+
+function isModKey(ev) {
+  return ev.ctrlKey || ev.metaKey;
+}
+
+function isCtrlChord(ev) {
+  return isModKey(ev) && !ev.shiftKey && !ev.altKey;
+}
+
+const SINGLE_KEY_TOOLS = { h: 'hand', v: 'select' };
+const CHORD_KEY_TOOLS = { p:'pen', x:'text', u:'eraser', s:'sticky', m:'shape', i:'image', o:'icon' };
 
 document.addEventListener('keydown', ev => {
-  const tag = document.activeElement.tagName;
-  const isEditing = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable;
-
-  // space = temp pan
-  if (ev.code === 'Space' && !isEditing) {
-    ev.preventDefault();
-    if (!state.isSpaceDown) {
-      state.isSpaceDown = true;
-      state.prevTool = state.tool;
-      document.body.classList.add('tool-hand');
-      canvasRoot.style.cursor = 'grab';
-    }
-    return;
-  }
-
-  if (isEditing) return;
+  if (isBoardTypingContext(ev.target) || isBoardTypingContext(document.activeElement)) return;
 
   if (isReadOnlyMode()) {
     const blockedKeys = ['Delete', 'Backspace', 'z', 'Z', 'y', 'Y'];
@@ -1194,16 +1193,53 @@ document.addEventListener('keydown', ev => {
     }
   }
 
-  // tool keys
-  const toolKey = KEY_TOOLS[ev.key.toLowerCase()];
-  if (toolKey) { setTool(toolKey); return; }
+  // Hand / Select — single key (H, V)
+  if (!isModKey(ev) && !ev.altKey && !ev.shiftKey) {
+    const quickTool = SINGLE_KEY_TOOLS[ev.key.toLowerCase()];
+    if (quickTool) {
+      setTool(quickTool);
+      return;
+    }
+  }
 
+  // Tools, view, zoom — Ctrl+letter (2 keys)
+  if (isCtrlChord(ev)) {
+    const toolKey = CHORD_KEY_TOOLS[ev.key.toLowerCase()];
+    if (toolKey) {
+      ev.preventDefault();
+      setTool(toolKey);
+      return;
+    }
+    if (ev.key.toLowerCase() === 'f') {
+      ev.preventDefault();
+      if (selectedIds?.size > 0) fitObjectsInView([...selectedIds]);
+      else fitAll();
+      return;
+    }
+    if (ev.key.toLowerCase() === 'g') {
+      ev.preventDefault();
+      toggleGrid();
+      return;
+    }
+
+    if (ev.key === '+' || ev.key === '=') { ev.preventDefault(); zoomIn(); return; }
+    if (ev.key === '-') { ev.preventDefault(); zoomOut(); return; }
+    if (ev.key === '0') { ev.preventDefault(); resetZoom(); return; }
+    if (ev.key === '/') { ev.preventDefault(); toggleShortcuts(); return; }
+    if (ev.key === 'e') {
+      ev.preventDefault();
+      const btn = document.querySelector('[onclick*="showExportMenu"]');
+      if (btn) showExportMenu(btn);
+      else exportBoard();
+      return;
+    }
+  }
 
   // arrow key nudge — move selected objects
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(ev.key)) {
     if (selectedIds && selectedIds.size > 0) {
       ev.preventDefault();
-      const step = ev.shiftKey ? 10 : 1; // shift = 10px, normal = 1px
+      const step = ev.shiftKey ? 10 : 1;
       const dx = ev.key==='ArrowLeft' ? -step : ev.key==='ArrowRight' ? step : 0;
       const dy = ev.key==='ArrowUp'   ? -step : ev.key==='ArrowDown'  ? step : 0;
 
@@ -1226,34 +1262,23 @@ document.addEventListener('keydown', ev => {
           if (el) { el.style.left = obj.x+'px'; el.style.top = obj.y+'px'; }
         }
       });
-      // debounced history save
       clearTimeout(nudgeTimer);
       nudgeTimer = setTimeout(() => { History.push(); saveToStorage(); }, 400);
       scheduleMinimap();
       return;
     }
   }
-  // zoom
-  if (ev.key === '+' || ev.key === '=') { zoomIn(); return; }
-  if (ev.key === '-') { zoomOut(); return; }
-  if (ev.key === '0') { resetZoom(); return; }
-  if (ev.key.toLowerCase() === 'f') {
-    if (selectedIds && selectedIds.size > 0) {
-      fitObjectsInView([...selectedIds]);
-    } else {
-      fitAll();
-    }
-    return;
-  }
-  if (ev.key.toLowerCase() === 'g') { toggleGrid(); return; }
-  if (ev.key === '?') { showShortcuts(); return; }
 
   // undo / redo
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'z' && !ev.shiftKey) { undo(); return; }
-  if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'Z' || (ev.key === 'z' && ev.shiftKey) || ev.key === 'y')) { ev.preventDefault(); redo(); return; }
+  if (isModKey(ev) && ev.key === 'z' && !ev.shiftKey) { undo(); return; }
+  if (isModKey(ev) && (ev.key === 'Z' || (ev.key === 'z' && ev.shiftKey) || ev.key === 'y')) {
+    ev.preventDefault();
+    redo();
+    return;
+  }
 
   // copy objects
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'c') {
+  if (isModKey(ev) && ev.key === 'c') {
     if (selectedIds.size > 0) {
       ev.preventDefault();
       copyObjectsToClipboard([...selectedIds]);
@@ -1263,7 +1288,7 @@ document.addEventListener('keydown', ev => {
   }
 
   // paste objects
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'v') {
+  if (isModKey(ev) && ev.key === 'v') {
     if (objectCopyClipboard.length > 0) {
       ev.preventDefault();
       const pasted = pasteObjectsFromClipboard();
@@ -1276,23 +1301,18 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSelectedObj(); return; }
 
   // duplicate
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'd') { ev.preventDefault(); duplicateSelectedObj(); return; }
+  if (isModKey(ev) && ev.key === 'd') { ev.preventDefault(); duplicateSelectedObj(); return; }
   // select all
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'a') { ev.preventDefault(); selectAll(); return; }
+  if (isModKey(ev) && ev.key === 'a') { ev.preventDefault(); selectAll(); return; }
 
   // escape
   if (ev.key === 'Escape') { setTool('hand'); hideShortcuts(); return; }
-
-  // export
-  if ((ev.metaKey || ev.ctrlKey) && ev.key === 'e') { ev.preventDefault(); exportBoard(); return; }
 });
 
-document.addEventListener('keyup', ev => {
-  if (ev.code === 'Space') {
-    state.isSpaceDown = false;
-    setTool(state.prevTool);
-  }
-});
+// Legacy alias used by type-specific delete handlers
+function isBoardTextInputActive() {
+  return isBoardTypingContext(document.activeElement);
+}
 
 // ═══════════════════════════════════════════════════
 // HISTORY — simple, reliable, snapshot based
@@ -1406,6 +1426,96 @@ function redrawAll() {
 }
 
 // ── helpers so both redrawAll and new-object creation use the same code ──
+
+function getTextEditable(wrap) {
+  return wrap?.querySelector('div');
+}
+
+function placeCaretAtEnd(editable) {
+  if (!editable) return;
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function placeCaretAtPoint(editable, clientX, clientY) {
+  if (!editable) return;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(clientX, clientY);
+    if (pos && editable.contains(pos.offsetNode)) {
+      const range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+      sel.addRange(range);
+      return;
+    }
+  } else if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(clientX, clientY);
+    if (range && editable.contains(range.startContainer)) {
+      sel.addRange(range);
+      return;
+    }
+  }
+  placeCaretAtEnd(editable);
+}
+
+function finishTextEditing(wrap, obj, editable) {
+  if (!wrap || !obj || !editable) return;
+  editable.contentEditable = 'false';
+  editable.style.pointerEvents = 'none';
+  wrap.classList.remove('is-editing');
+  wrap.style.border = selectedIds.has(obj.id)
+    ? '1.5px solid #2e9d91'
+    : '1.5px solid transparent';
+  if (!obj.w) obj.w = wrap.offsetWidth;
+  if (!obj.h) obj.h = wrap.offsetHeight;
+  const newText = editable.textContent;
+  if (newText !== obj.content) {
+    obj.content = newText;
+    History.push();
+    saveToStorage();
+  }
+}
+
+function beginTextEditing(wrap, obj, opts = {}) {
+  if (!wrap || !obj || !guardEditObject(obj)) return;
+  const editable = getTextEditable(wrap);
+  if (!editable) return;
+
+  editable.contentEditable = 'true';
+  editable.style.pointerEvents = 'auto';
+  wrap.classList.add('is-editing');
+  wrap.style.border = '1.5px dashed rgba(79,113,242,0.5)';
+  editable.focus();
+
+  if (opts.selectAll) {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(editable);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) { /* ignore */ }
+  } else if (opts.caretAtClick && Number.isFinite(opts.clientX) && Number.isFinite(opts.clientY)) {
+    placeCaretAtPoint(editable, opts.clientX, opts.clientY);
+  } else {
+    placeCaretAtEnd(editable);
+  }
+}
+
+function endActiveTextEdit() {
+  const wrap = document.querySelector('.canvas-text.is-editing');
+  if (!wrap) return;
+  const obj = state.objects.find((o) => o.id === wrap.dataset.objId);
+  const editable = getTextEditable(wrap);
+  if (obj && editable) finishTextEditing(wrap, obj, editable);
+  else editable?.blur();
+}
 
 function addStrokeToSvg(svg, obj) {
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -1524,37 +1634,21 @@ function addTextToCanvas(obj) {
     }
   });
 
-  // double-click to switch to text tool and edit
+  // double-click to select all text for quick replacement
   wrap.addEventListener('dblclick', ev => {
     ev.stopPropagation();
-    if (!guardEditObject(obj)) return;
-    editable.contentEditable = 'true';
-    editable.focus();
-    // select all text
-    try {
-      const range = document.createRange();
-      range.selectNodeContents(editable);
-      window.getSelection().removeAllRanges();
-      window.getSelection().addRange(range);
-    } catch(e) {}
+    beginTextEditing(wrap, obj, { selectAll: true });
   });
 
   editable.addEventListener('blur', () => {
-    editable.contentEditable = 'false';
-    editable.style.pointerEvents = 'none';
-    if (!obj.w) obj.w = wrap.offsetWidth;
-    if (!obj.h) obj.h = wrap.offsetHeight;
-    const newText = editable.textContent;
-    if (newText !== obj.content) {
-      obj.content = newText;
-      History.push(); saveToStorage();
-    }
+    finishTextEditing(wrap, obj, editable);
   });
 
   editable.addEventListener('keydown', ev => {
     if (ev.key === 'Escape') { editable.blur(); ev.preventDefault(); }
     ev.stopPropagation();
   });
+  editable.addEventListener('keyup', ev => ev.stopPropagation());
   editable.addEventListener('mousedown', ev => ev.stopPropagation());
 
   canvasWorld.appendChild(wrap);
@@ -2198,10 +2292,18 @@ function copyText(url) {
 // SHORTCUTS OVERLAY
 // ═══════════════════════════════════════════════════
 function showShortcuts() {
-  document.getElementById('shortcuts-overlay').classList.add('show');
+  document.getElementById('shortcuts-overlay')?.classList.add('show');
 }
 function hideShortcuts() {
-  document.getElementById('shortcuts-overlay').classList.remove('show');
+  document.getElementById('shortcuts-overlay')?.classList.remove('show');
+}
+function hideShortcutsIfOpen() {
+  if (document.getElementById('shortcuts-overlay')?.classList.contains('show')) {
+    hideShortcuts();
+  }
+}
+function toggleShortcuts() {
+  document.getElementById('shortcuts-overlay')?.classList.toggle('show');
 }
 
 // ═══════════════════════════════════════════════════
@@ -2277,7 +2379,7 @@ function init() {
   initRealtimePresence();
   initRealtimeBoardSync();
   initActivityPanel();
-  showHint('Welcome to LP MindSpace — scroll to pan · Ctrl+scroll to zoom · press ? for shortcuts');
+  showHint('Welcome to LP MindSpace — scroll to pan · Ctrl+scroll to zoom · Ctrl+/ for shortcuts');
 }
 
 /** If React re-mounted the shell, redraw from in-memory state when the tab is visible again. */
@@ -2918,6 +3020,7 @@ function selectObject(id, addToSelection) {
 
   if (!addToSelection) clearAllSelections();
   selectedIds.add(id);
+  hideShortcutsIfOpen();
 
   if (obj.type === 'sticky') {
     const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
@@ -3114,6 +3217,7 @@ function startObjDrag(e, clickedId) {
 
   const startMouseX = e.clientX;
   const startMouseY = e.clientY;
+  const dragStartTarget = e.target;
   let moved = false;
 
   // add dragging class to sticky
@@ -3165,12 +3269,26 @@ function startObjDrag(e, clickedId) {
     }
   }
 
-  function onUp() {
+  function onUp(ev) {
     selectedIds.forEach(id => {
       const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
       if (el) el.classList.remove('dragging');
     });
     if (moved) { History.push(); saveToStorage(); }
+    else if (
+      clickedObj?.type === 'text'
+      && canEditObject(clickedObj)
+      && !isTransformHandleTarget(dragStartTarget)
+    ) {
+      const wrap = document.querySelector(`.canvas-text[data-obj-id="${clickedId}"]`);
+      if (wrap) {
+        beginTextEditing(wrap, clickedObj, {
+          caretAtClick: true,
+          clientX: ev?.clientX ?? startMouseX,
+          clientY: ev?.clientY ?? startMouseY,
+        });
+      }
+    }
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
   }
@@ -4162,9 +4280,7 @@ clearAllSelections = function() {
 // ── Keyboard shortcut: Delete selected shape
 document.addEventListener('keydown', ev => {
   if (!selectedShapeId) return;
-  const isEditing = document.activeElement.tagName === 'TEXTAREA'
-    || document.activeElement.tagName === 'INPUT'
-    || document.activeElement.isContentEditable;
+  const isEditing = isBoardTextInputActive();
   if (isEditing) return;
   if (ev.key === 'Delete' || ev.key === 'Backspace') {
     ev.preventDefault(); deleteSelectedShape();
@@ -4537,9 +4653,7 @@ clearAllSelections = function() {
 // ── Keyboard: delete/duplicate selected image
 document.addEventListener('keydown', ev => {
   if (!selectedImageId) return;
-  const isEditing = document.activeElement.tagName === 'TEXTAREA'
-    || document.activeElement.tagName === 'INPUT'
-    || document.activeElement.isContentEditable;
+  const isEditing = isBoardTextInputActive();
   if (isEditing) return;
   if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); deleteSelectedImage(); }
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'd')  { ev.preventDefault(); duplicateSelectedImage(); }
@@ -5285,9 +5399,7 @@ clearAllSelections = function() {
 
 document.addEventListener('keydown', (ev) => {
   if (!selectedIconId) return;
-  const isEditing = document.activeElement.tagName === 'TEXTAREA'
-    || document.activeElement.tagName === 'INPUT'
-    || document.activeElement.isContentEditable;
+  const isEditing = isBoardTextInputActive();
   if (isEditing) return;
   if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); deleteSelectedIcon(); }
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'd') { ev.preventDefault(); duplicateSelectedIcon(); }
@@ -5733,6 +5845,7 @@ selectObject = function(id, addToSelection) {
 // ── Patch clearAllSelections to hide text toolbar
 const _origClearAllForText = clearAllSelections;
 clearAllSelections = function() {
+  endActiveTextEdit();
   _origClearAllForText();
   hideTextToolbar();
   document.querySelectorAll('.canvas-text.sel-active').forEach(el => {
@@ -6307,15 +6420,7 @@ function triggerImportJSON() {
   input.click();
 }
 
-// ⌘E opens export menu
-document.addEventListener('keydown', ev => {
-  if ((ev.metaKey||ev.ctrlKey) && ev.key==='e') {
-    ev.preventDefault();
-    const btn = document.querySelector('[onclick*="showExportMenu"]');
-    if (btn) showExportMenu(btn);
-  }
-}, true);
-
+// Export menu shortcut handled in main keydown listener (Ctrl+E)
 
 // ═══════════════════════════════════════════════════
 // MINI-MAP — STEP 7
@@ -7586,6 +7691,7 @@ function toggleAiBar(btn) {
 
 // ── Key handler
 function handleAiKey(e) {
+  e.stopPropagation();
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     submitAiPrompt();
@@ -7857,6 +7963,7 @@ function showSelectionAiPrompt() {
 }
 
 function handleSelAiKey(e) {
+  e.stopPropagation();
   if (e.key === 'Enter') { e.preventDefault(); submitSelectionAi(); }
   if (e.key === 'Escape') {
     const popup = document.getElementById('sel-ai-popup');
@@ -7994,7 +8101,7 @@ const BG_CONFIGS = {
   gray:  { bg: '#fbfbfb', dot: 'rgba(20,20,20,0.22)', uiBg: '#141414', name: 'gray'  },
   dark:  { bg: '#141414', dot: 'rgba(251,251,251,0.10)', uiBg: '#141414', name: 'dark' },
 };
-let currentBg = localStorage.getItem('lpa-canvas-bg') || 'white';
+let currentBg = localStorage.getItem('lpa-canvas-bg') || 'gray';
 
 function setBoardBg(name) {
   currentBg = name;
@@ -8007,7 +8114,7 @@ function setBoardBg(name) {
 }
 
 function applyBoardBg() {
-  const cfg = BG_CONFIGS[currentBg] || BG_CONFIGS.white;
+  const cfg = BG_CONFIGS[currentBg] || BG_CONFIGS.gray;
   document.documentElement.style.setProperty('--canvas-bg', cfg.bg);
   document.documentElement.style.setProperty('--dot-color', cfg.dot);
   // dark mode text color adjustment
@@ -8545,10 +8652,8 @@ function deleteSelectedSticky() {
 
 // ── Delete key support for selected sticky
 document.addEventListener('keydown', ev => {
-  const isEditing = document.activeElement.tagName === 'TEXTAREA'
-    || document.activeElement.tagName === 'INPUT'
-    || document.activeElement.isContentEditable;
-  if (!isEditing && (ev.key === 'Delete' || ev.key === 'Backspace') && selectedStickyId) {
+  if (isBoardTextInputActive()) return;
+  if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedStickyId) {
     ev.preventDefault();
     deleteSelectedSticky();
   }
@@ -8613,6 +8718,7 @@ Object.assign(window, {
   setTool,
   showShortcuts,
   hideShortcuts,
+  toggleShortcuts,
   showExportMenu,
   hideExportMenu,
   triggerImportJSON,

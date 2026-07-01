@@ -1,5 +1,8 @@
 
 'use strict';
+
+const BOARD_UI_FONT = "'Helvetica Neue', Helvetica, Arial, sans-serif";
+
 // ═══════════════════════════════════════════════════
 // CORE STATE
 // ═══════════════════════════════════════════════════
@@ -39,8 +42,8 @@ function bindBoardDom() {
 }
 
 const UI_CHROME_SELECTOR =
-  '#topbar, #toolbar, #zoom-panel, #share-dialog, #activity-panel, #export-menu, ' +
-  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #pen-toolbar, ' +
+  '#board-bar-left, #board-bar-right, #viewport-return-banner, #toolbar, #zoom-panel, #share-dialog, #activity-panel, #export-menu, ' +
+  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, ' +
   '#shortcuts-overlay, #board-info-panel, #about-panel, #panel-backdrop, #minimap-wrap, ' +
   '#ctx-menu, #shape-convert-popup, #sticky-color-picker, #sel-ai-popup, #export-progress, #ai-loading';
 
@@ -95,7 +98,7 @@ function resetBoardOverlays() {
   const shell = document.querySelector('.board-shell');
   if (!shell) return;
 
-  shell.querySelectorAll('.obj-toolbar, #shape-picker, #icon-picker, #pen-toolbar, .ttb-menu, #export-menu, #more-menu, #ai-bar, #export-progress, #ai-loading, #share-dialog, #activity-panel, #shortcuts-overlay, #ctx-menu, #shape-convert-popup, #board-info-panel, #about-panel, #panel-backdrop').forEach((el) => {
+  shell.querySelectorAll('.obj-toolbar, #shape-picker, #shape-picker-more, #stamp-picker, #icon-picker, #pen-toolbar, .ttb-menu, #export-menu, #more-menu, #ai-bar, #export-progress, #ai-loading, #share-dialog, #activity-panel, #shortcuts-overlay, #ctx-menu, #shape-convert-popup, #board-info-panel, #about-panel, #panel-backdrop').forEach((el) => {
     el.classList.remove('visible', 'active', 'show', 'is-open', 'open');
   });
 
@@ -205,6 +208,7 @@ let collabPresenceHeartbeat = null;
 let sessionRoster = [];
 let activityPanelOpen = false;
 let followClientId = null;
+let savedOwnViewport = null;
 let activityHeartbeatTimer = null;
 let activityPanelRefreshTimer = null;
 let activityRosterChannel = null;
@@ -372,10 +376,10 @@ function updateZoomLabel() {
   if (zoomLabel) zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
 }
 
-// ── Floating panel placement (avoid topbar, bottom toolbar, AI bar, and other toolbars)
+// ── Floating panel placement (avoid top bars, bottom toolbar, AI bar, and other toolbars)
 const FLOAT_UI_MARGIN = 8;
 const FLOAT_UI_GAP = 10;
-const TOPBAR_CLEARANCE = 58;
+const TOPBAR_CLEARANCE = 64;
 const BOTTOM_TOOLBAR_CLEARANCE = 96;
 
 function getBottomToolbarClearance() {
@@ -398,8 +402,10 @@ function isFloatingPanelVisible(el, id) {
 
 function getFloatingUiObstacleRects(excludeIds = []) {
   const rects = [];
-  const topbar = document.getElementById('topbar');
-  if (topbar) rects.push(topbar.getBoundingClientRect());
+  ['board-bar-left', 'board-bar-right'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) rects.push(el.getBoundingClientRect());
+  });
 
   const toolbar = document.getElementById('toolbar');
   if (toolbar) rects.push(toolbar.getBoundingClientRect());
@@ -534,7 +540,7 @@ function fitObjectsInView(ids) {
         minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
         maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
       });
-    } else if (obj.type === 'shape' && (obj.shapeType==='arrow'||obj.shapeType==='line')) {
+    } else if (obj.type === 'shape' && shapeIsLine(obj.shapeType)) {
       minX=Math.min(minX,obj.x,obj.x2||0); minY=Math.min(minY,obj.y,obj.y2||0);
       maxX=Math.max(maxX,obj.x,obj.x2||0); maxY=Math.max(maxY,obj.y,obj.y2||0);
     } else {
@@ -626,10 +632,11 @@ const TOOL_HINTS = {
   shape:  'Click and drag to draw a shape · hold Shift to constrain',
   image:  'Click to pick a file · drag & drop an image · or press Ctrl+V to paste',
   icon:   'Pick an icon · click the board to place · search by name or category',
+  stamp:  'Pick a stamp from the ring · it appears in the center of your view · everyone sees it',
 };
 
 function setTool(tool) {
-  if (isReadOnlyMode() && tool !== 'hand') {
+  if (isReadOnlyMode() && tool !== 'hand' && tool !== 'stamp') {
     showToast('View-only link: editing disabled');
     tool = 'hand';
   }
@@ -647,6 +654,7 @@ function setTool(tool) {
   // show/hide shape picker
   const shapePicker = document.getElementById('shape-picker');
   if (shapePicker) shapePicker.classList.toggle('visible', tool === 'shape');
+  if (tool !== 'shape') toggleShapeMorePanel(false);
 
   // show/hide pen toolbar
   const penToolbar = document.getElementById('pen-toolbar');
@@ -657,6 +665,10 @@ function setTool(tool) {
     iconPicker.classList.toggle('visible', tool === 'icon');
     if (tool === 'icon') ensureIconPickerReady();
   }
+
+  const stampPicker = document.getElementById('stamp-picker');
+  if (stampPicker) stampPicker.classList.toggle('visible', tool === 'stamp');
+  if (tool !== 'stamp') selectedStampEmoji = null;
 
   // image tool: open file picker immediately on tool activation (clean user gesture)
   if (tool === 'image') {
@@ -688,6 +700,127 @@ function showHint(msg) {
 }
 
 // ═══════════════════════════════════════════════════
+// STAMPS — ephemeral emoji reactions (realtime)
+// ═══════════════════════════════════════════════════
+const STAMP_EMOJIS = [
+  { id: 'laugh', emoji: '😂', label: 'Laughing' },
+  { id: 'rofl', emoji: '🤣', label: 'ROFL' },
+  { id: 'thumbs-up', emoji: '👍', label: 'Thumbs up' },
+  { id: 'thumbs-down', emoji: '👎', label: 'Thumbs down' },
+  { id: 'heart', emoji: '❤️', label: 'Heart' },
+  { id: 'fire', emoji: '🔥', label: 'Fire' },
+  { id: 'party', emoji: '🎉', label: 'Party' },
+  { id: 'clap', emoji: '👏', label: 'Clap' },
+  { id: 'wow', emoji: '😮', label: 'Wow' },
+  { id: 'sad', emoji: '😢', label: 'Sad' },
+  { id: 'pray', emoji: '🙏', label: 'Thanks' },
+  { id: 'hundred', emoji: '💯', label: '100' },
+  { id: 'sparkle', emoji: '✨', label: 'Sparkle' },
+  { id: 'rocket', emoji: '🚀', label: 'Rocket' },
+  { id: 'star', emoji: '⭐', label: 'Star' },
+  { id: 'idea', emoji: '💡', label: 'Idea' },
+];
+
+let selectedStampEmoji = null;
+const STAMP_ANIM_MS = 1600;
+
+function ensureStampLayer() {
+  bindBoardDom();
+  let layer = document.getElementById('stamp-layer');
+  if (!layer && canvasWorld) {
+    layer = document.createElement('div');
+    layer.id = 'stamp-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    canvasWorld.appendChild(layer);
+  }
+  return layer;
+}
+
+function buildStampPicker() {
+  const ring = document.getElementById('stamp-picker-ring');
+  if (!ring || ring.dataset.built) return;
+  ring.dataset.built = '1';
+  ring.querySelectorAll('.stamp-picker-btn').forEach((el) => el.remove());
+
+  const n = STAMP_EMOJIS.length;
+  const radius = 78;
+  STAMP_EMOJIS.forEach((item, i) => {
+    const angle = (360 / n) * i - 90;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'stamp-picker-btn';
+    btn.dataset.stamp = item.emoji;
+    btn.title = item.label;
+    btn.setAttribute('aria-label', item.label);
+    btn.style.setProperty('--stamp-angle', `${angle}deg`);
+    btn.style.setProperty('--stamp-radius', `${radius}px`);
+    btn.innerHTML = `<span class="stamp-picker-emoji">${item.emoji}</span>`;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectStampEmoji(item.emoji);
+    });
+    ring.appendChild(btn);
+  });
+}
+
+function getStampPlacementWorldPoint() {
+  return screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+}
+
+function selectStampEmoji(emoji) {
+  selectedStampEmoji = emoji;
+  document.querySelectorAll('.stamp-picker-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.stamp === emoji);
+  });
+  const center = document.getElementById('stamp-picker-center');
+  if (center) center.textContent = emoji;
+  const wp = getStampPlacementWorldPoint();
+  fireBoardStamp(emoji, wp.x, wp.y);
+  returnToSelectTool();
+}
+
+function fireBoardStamp(emoji, wx, wy) {
+  const access = getLiveBoardAccess();
+  const payload = {
+    clientId: realtimeClientId,
+    userId: access.userId,
+    userName: access.userName || access.userEmail || 'User',
+    emoji,
+    x: wx,
+    y: wy,
+    sentAt: Date.now(),
+  };
+  playBoardStampAnimation(payload);
+  publishBoardStamp(payload);
+}
+
+function playBoardStampAnimation(payload) {
+  if (!payload?.emoji || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
+  const layer = ensureStampLayer();
+  if (!layer) return;
+
+  const el = document.createElement('div');
+  el.className = 'board-stamp';
+  el.style.left = `${payload.x}px`;
+  el.style.top = `${payload.y}px`;
+  el.innerHTML = `
+    <span class="board-stamp-emoji">${payload.emoji}</span>
+    <span class="board-stamp-name">${escapeHtml(payload.userName || 'User')}</span>
+  `;
+  layer.appendChild(el);
+  window.setTimeout(() => el.remove(), STAMP_ANIM_MS + 80);
+}
+
+function publishBoardStamp(payload) {
+  if (!boardSyncChannel || !boardSyncChannelReady) return;
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: 'board_stamp',
+    payload,
+  });
+}
+
+// ═══════════════════════════════════════════════════
 // CANVAS MOUSE EVENTS
 // ═══════════════════════════════════════════════════
 function handleCanvasPointerDown(e) {
@@ -704,6 +837,7 @@ function handleCanvasPointerDown(e) {
   }
 
   if (tool === 'select') {
+    if (isTransformHandleTarget(e.target)) return;
     handleSelectMousedown(e);
     return;
   }
@@ -717,6 +851,7 @@ function handleCanvasPointerDown(e) {
     const el = e.target instanceof Element ? e.target : null;
     if (el?.closest('.canvas-text')) return;
     placeText(e);
+    e.stopPropagation();
     return;
   }
 
@@ -921,6 +1056,7 @@ function pointsToPath(pts) {
 // ═══════════════════════════════════════════════════
 function placeText(e) {
   e.preventDefault();
+  if (!bindBoardDom() || !canvasWorld) return;
   const wp = screenToWorld(e.clientX, e.clientY);
 
   // create obj immediately and render via addTextToCanvas
@@ -945,6 +1081,7 @@ function placeText(e) {
   updateObjectCount();
 
   const wrap = addTextToCanvas(obj);
+  if (!wrap) return;
 
   // highlight border while editing
   wrap.style.border = '1.5px dashed rgba(79,113,242,0.5)';
@@ -953,20 +1090,25 @@ function placeText(e) {
   const editable = getTextEditable(wrap);
   if (editable) {
     beginTextEditing(wrap, obj);
-    // remove empty node on blur if no text was typed
+    // remove empty node on blur if no text was typed (defer so same-click deselect doesn't delete it)
     const onFirstBlur = () => {
-      if (!obj.content.trim()) {
-        wrap.remove();
-        state.objects = state.objects.filter(o => o.id !== obj.id);
-        updateObjectCount();
-        return;
-      }
-      wrap.style.border = '1.5px solid transparent';
-      editable.removeEventListener('blur', onFirstBlur);
+      requestAnimationFrame(() => {
+        if (wrap.classList.contains('is-editing') || document.activeElement === editable) return;
+        const text = (obj.content || editable.textContent || '').trim();
+        if (!text) {
+          wrap.remove();
+          state.objects = state.objects.filter(o => o.id !== obj.id);
+          updateObjectCount();
+          return;
+        }
+        wrap.style.border = '1.5px solid transparent';
+        editable.removeEventListener('blur', onFirstBlur);
+      });
     };
     editable.addEventListener('blur', onFirstBlur);
   }
-  returnToSelectTool();
+
+  requestAnimationFrame(() => returnToSelectTool());
 }
 
 // ═══════════════════════════════════════════════════
@@ -1179,7 +1321,7 @@ function isCtrlChord(ev) {
 }
 
 const SINGLE_KEY_TOOLS = { h: 'hand', v: 'select' };
-const CHORD_KEY_TOOLS = { p:'pen', x:'text', u:'eraser', s:'sticky', m:'shape', i:'image', o:'icon' };
+const CHORD_KEY_TOOLS = { p:'pen', x:'text', u:'eraser', s:'sticky', m:'shape', i:'image', o:'icon', b:'stamp' };
 
 document.addEventListener('keydown', ev => {
   if (isBoardTypingContext(ev.target) || isBoardTypingContext(document.activeElement)) return;
@@ -1250,7 +1392,7 @@ document.addEventListener('keydown', ev => {
           obj.points = obj.points.map(p => ({ x:p.x+dx, y:p.y+dy }));
           const pathEl = document.querySelector(`path[data-obj-id="${id}"]`);
           if (pathEl) pathEl.setAttribute('d', pointsToPath(obj.points));
-        } else if (obj.type === 'shape' && (obj.shapeType==='arrow'||obj.shapeType==='line')) {
+        } else if (obj.type === 'shape' && shapeIsLine(obj.shapeType)) {
           obj.x  += dx; obj.y  += dy;
           obj.x2 += dx; obj.y2 += dy;
           const el = canvasWorld.querySelector(`[data-obj-id="${id}"]`);
@@ -1536,13 +1678,15 @@ function addStrokeToSvg(svg, obj) {
 }
 
 function addTextToCanvas(obj) {
+  if (!canvasWorld && !bindBoardDom()) return null;
+  if (!canvasWorld) return null;
   const wrap = document.createElement('div');
   wrap.className = 'canvas-text';
   wrap.dataset.objId = obj.id;
 
   // apply size — if w/h stored use them, else auto
   const hasSize = obj.w && obj.h;
-  const fontFamily = obj.fontFamily || "'Bricolage Grotesque',sans-serif";
+  const fontFamily = obj.fontFamily || BOARD_UI_FONT;
   const textAlign = obj.textAlign || 'left';
   const textDecoration = obj.textDecoration || 'none';
   const highlight = obj.highlight && obj.highlight !== 'transparent' ? obj.highlight : 'transparent';
@@ -1973,6 +2117,65 @@ function closeActivityPanel() {
   }
 }
 
+function saveOwnViewportBeforeNavigate() {
+  if (savedOwnViewport) return;
+  savedOwnViewport = {
+    panX: state.panX,
+    panY: state.panY,
+    zoom: state.zoom,
+  };
+  updateViewportReturnBanner();
+}
+
+function returnToOwnViewport() {
+  if (!savedOwnViewport) {
+    showToast('Nothing to return to');
+    return;
+  }
+  const target = savedOwnViewport;
+  savedOwnViewport = null;
+  followClientId = null;
+  state.panX = target.panX;
+  state.panY = target.panY;
+  state.zoom = target.zoom;
+  applyTransform();
+  scheduleViewportPresencePublish();
+  updateViewportReturnBanner();
+  if (activityPanelOpen) renderActivityPanel();
+  showToast('Returned to your view');
+}
+
+function updateViewportReturnBanner() {
+  const banner = document.getElementById('viewport-return-banner');
+  if (!banner) return;
+
+  if (!savedOwnViewport && !followClientId) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+
+  let label = 'Viewing another participant';
+  if (followClientId) {
+    const client = remoteCollabClients.get(followClientId);
+    label = `Following ${client?.name || 'participant'}`;
+  }
+
+  const actions = [];
+  if (savedOwnViewport) {
+    actions.push('<button type="button" class="viewport-return-btn" onclick="returnToOwnViewport()">Back to my place</button>');
+  }
+  if (followClientId) {
+    actions.push('<button type="button" class="viewport-return-btn viewport-return-btn--ghost" onclick="stopFollowingParticipant()">Stop following</button>');
+  }
+
+  banner.innerHTML = `
+    <span class="viewport-return-label">${escapeHtml(label)}</span>
+    <div class="viewport-return-actions">${actions.join('')}</div>
+  `;
+  banner.style.display = 'flex';
+}
+
 function renderActivityPanel() {
   const list = document.getElementById('activity-participant-list');
   const banner = document.getElementById('activity-follow-banner');
@@ -1990,9 +2193,21 @@ function renderActivityPanel() {
       const followed = entries.find((entry) => entry.client?.clientId === followClientId);
       const followedName = followed?.name || 'participant';
       banner.style.display = 'flex';
+      const backBtn = savedOwnViewport
+        ? '<button type="button" class="activity-follow-stop" onclick="returnToOwnViewport()">Back to my place</button>'
+        : '';
       banner.innerHTML = `
         <span>Following ${escapeHtml(followedName)}</span>
-        <button type="button" class="activity-follow-stop" onclick="stopFollowingParticipant()">Stop</button>
+        <div class="activity-follow-actions">
+          ${backBtn}
+          <button type="button" class="activity-follow-stop" onclick="stopFollowingParticipant()">Stop following</button>
+        </div>
+      `;
+    } else if (savedOwnViewport) {
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <span>Viewing another participant</span>
+        <button type="button" class="activity-follow-stop" onclick="returnToOwnViewport()">Back to my place</button>
       `;
     } else {
       banner.style.display = 'none';
@@ -2087,6 +2302,7 @@ function jumpToParticipant(userId) {
     showToast('This participant has no cursor or viewport yet');
     return;
   }
+  saveOwnViewportBeforeNavigate();
   highlightPresenceCursor(client.clientId);
   const name = getDisplayNameForUserId(userId);
   showToast(`Jumped to ${name}`);
@@ -2103,6 +2319,7 @@ function startFollowingParticipant(clientId) {
   }
   followClientId = clientId;
   const client = remoteCollabClients.get(clientId);
+  saveOwnViewportBeforeNavigate();
   navigateToParticipantViewport(client);
   renderActivityPanel();
   showToast(`Following ${client?.name || 'participant'}`);
@@ -2111,6 +2328,7 @@ function startFollowingParticipant(clientId) {
 function stopFollowingParticipant() {
   if (!followClientId) return;
   followClientId = null;
+  updateViewportReturnBanner();
   renderActivityPanel();
   showToast('Stopped following');
 }
@@ -2118,6 +2336,7 @@ function stopFollowingParticipant() {
 function breakFollowOnUserViewportChange() {
   if (!followClientId) return;
   followClientId = null;
+  updateViewportReturnBanner();
   if (activityPanelOpen) renderActivityPanel();
 }
 
@@ -2126,6 +2345,7 @@ function applyFollowViewportIfNeeded() {
   const client = remoteCollabClients.get(followClientId);
   if (!client) {
     followClientId = null;
+    updateViewportReturnBanner();
     if (activityPanelOpen) renderActivityPanel();
     return;
   }
@@ -2619,6 +2839,10 @@ function initRealtimeBoardSync() {
     renderPresence();
     applyFollowViewportIfNeeded();
     if (activityPanelOpen) renderActivityPanel();
+  });
+  boardSyncChannel.on('broadcast', { event: 'board_stamp' }, ({ payload }) => {
+    if (!payload || payload.clientId === realtimeClientId) return;
+    playBoardStampAnimation(payload);
   });
   boardSyncChannel.on(
     'postgres_changes',
@@ -3157,6 +3381,54 @@ function handleSelectMousedown(e) {
   const target = e.target instanceof Element ? e.target : null;
   if (!target) return;
 
+  if (isTransformHandleTarget(target)) return;
+
+  // Stroke (pen path)
+  const strokeEl = target.closest('path[data-obj-id]');
+  if (strokeEl) {
+    const id = strokeEl.dataset.objId;
+    if (!addMode) clearAllSelections();
+    selectObject(id, addMode);
+    startObjDrag(e, id);
+    e.stopPropagation();
+    return;
+  }
+
+  // Shape
+  const shapeEl = target.closest('.shape-obj');
+  if (shapeEl) {
+    const id = shapeEl.dataset.objId;
+    if (selectedIds.size > 1 && selectedIds.has(id)) {
+      startObjDrag(e, id);
+    } else {
+      if (!addMode) clearAllSelections();
+      selectShapeObj(id, shapeEl, addMode);
+      startObjDrag(e, id);
+    }
+    e.stopPropagation();
+    return;
+  }
+
+  // Image
+  const imageEl = target.closest('.image-obj');
+  if (imageEl) {
+    const id = imageEl.dataset.objId;
+    selectImageObj(id, addMode);
+    startObjDrag(e, id);
+    e.stopPropagation();
+    return;
+  }
+
+  // Icon
+  const iconEl = target.closest('.icon-obj');
+  if (iconEl) {
+    const id = iconEl.dataset.objId;
+    selectIconObj(id, addMode);
+    startObjDrag(e, id);
+    e.stopPropagation();
+    return;
+  }
+
   // Did we click a sticky?
   const stickyEl = target.closest('.sticky-note');
   if (stickyEl) {
@@ -3164,6 +3436,7 @@ function handleSelectMousedown(e) {
     if (!addMode) clearAllSelections();
     selectObject(id, true);
     startObjDrag(e, id);
+    e.stopPropagation();
     return;
   }
 
@@ -3174,6 +3447,7 @@ function handleSelectMousedown(e) {
     if (!addMode) clearAllSelections();
     selectObject(id, true);
     startObjDrag(e, id);
+    e.stopPropagation();
     return;
   }
 
@@ -3207,7 +3481,7 @@ function startObjDrag(e, clickedId) {
     if (!obj) return;
     if (obj.type === 'stroke') {
       startPositions[id] = { points: obj.points.map(p => ({ x: p.x, y: p.y })) };
-    } else if (obj.type === 'shape' && (obj.shapeType==='arrow'||obj.shapeType==='line')) {
+    } else if (obj.type === 'shape' && shapeIsLine(obj.shapeType)) {
       // snapshot both endpoints
       startPositions[id] = { x: obj.x, y: obj.y, x2: obj.x2||0, y2: obj.y2||0 };
     } else {
@@ -3240,7 +3514,7 @@ function startObjDrag(e, clickedId) {
         obj.points = sp.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
         const pathEl = document.querySelector(`path[data-obj-id="${id}"]`);
         if (pathEl) pathEl.setAttribute('d', pointsToPath(obj.points));
-      } else if (obj.type === 'shape' && (obj.shapeType==='arrow'||obj.shapeType==='line')) {
+      } else if (obj.type === 'shape' && shapeIsLine(obj.shapeType)) {
         // move both endpoints
         obj.x  = sp.x  + dx; obj.y  = sp.y  + dy;
         obj.x2 = sp.x2 + dx; obj.y2 = sp.y2 + dy;
@@ -3492,6 +3766,7 @@ function duplicateSelectedObj() {
 // but also handle it from the canvasRoot global listener
 document.addEventListener('mousedown', (e) => {
   if (state.tool !== 'select' || !isEventOnCanvas(e)) return;
+  if (document.querySelector('.canvas-text.is-editing')) return;
   const isOnObj = e.target.closest('.sticky-note') ||
                   e.target.closest('.canvas-text') ||
                   e.target.closest('.icon-obj') ||
@@ -3582,15 +3857,23 @@ function initShapeToolbar() {
 // ── Set active shape type
 function setShapeType(type) {
   currentShapeType = type;
-  document.querySelectorAll('.sp-btn').forEach(b => b.classList.remove('active'));
-  const btn = document.getElementById('sp-' + type);
-  if (btn) btn.classList.add('active');
+  document.querySelectorAll('.sp-btn[data-shape], .shape-more-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.shape === type);
+  });
 }
 
 // Helper: is this shape type a line/arrow?
 function shapeIsLine(type) {
   const def = SHAPE_REGISTRY.find(r => r.id === type);
   return def ? def.isLine : false;
+}
+
+function shapeLineHasArrowEnd(type) {
+  return type === 'arrow' || type === 'double-arrow';
+}
+
+function shapeLineHasArrowStart(type) {
+  return type === 'double-arrow';
 }
 
 // ── Start drawing a shape
@@ -3691,11 +3974,33 @@ function endShapeDraw(e) {
 // ── Build SVG markup for a shape
 // ═══════════════════════════════════════════════════
 // SHAPE REGISTRY — add new shapes here only
-// Each entry: { id, label, isLine, icon(svg string), build(w,h,f,s,sw) }
+// Each entry: { id, label, category, primary, isLine, icon, build(w,h,f,s,sw) }
 // ═══════════════════════════════════════════════════
+function shapePolyBuild(sides, w, h, f, s, sw, startDeg = -90) {
+  const p = sw;
+  const cx = w / 2, cy = h / 2;
+  const rx = (w - p * 2) / 2, ry = (h - p * 2) / 2;
+  const pts = Array.from({ length: sides }, (_, i) => {
+    const a = Math.PI / 180 * (360 / sides * i + startDeg);
+    return `${cx + rx * Math.cos(a)},${cy + ry * Math.sin(a)}`;
+  }).join(' ');
+  return `<polygon points="${pts}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+}
+
+function drawShapePolyOnCtx(ctx, x, y, w, h, sides, startDeg = -90) {
+  const cx = x + w / 2, cy = y + h / 2;
+  const rx = w / 2, ry = h / 2;
+  for (let i = 0; i < sides; i++) {
+    const a = Math.PI / 180 * (360 / sides * i + startDeg);
+    const px = cx + rx * Math.cos(a), py = cy + ry * Math.sin(a);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
 const SHAPE_REGISTRY = [
   {
-    id: 'rect', label: 'Rectangle', isLine: false,
+    id: 'rect', label: 'Rectangle', category: 'Basic', primary: true, isLine: false,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="4" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>`,
     build: (w,h,f,s,sw) => {
       const p=sw; const iw=Math.max(1,w-p*2); const ih=Math.max(1,h-p*2);
@@ -3703,7 +4008,25 @@ const SHAPE_REGISTRY = [
     }
   },
   {
-    id: 'circle', label: 'Circle', isLine: false,
+    id: 'rounded-rect', label: 'Rounded rectangle', category: 'Basic', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="4" width="14" height="10" rx="5" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const iw=Math.max(1,w-p*2); const ih=Math.max(1,h-p*2);
+      const rx = Math.min(16, iw / 4, ih / 4);
+      return `<rect x="${p}" y="${p}" width="${iw}" height="${ih}" rx="${rx}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'square', label: 'Square', category: 'Basic', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="3" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const side=Math.min(w,h); const ox=(w-side)/2, oy=(h-side)/2;
+      const inner=Math.max(1,side-p*2);
+      return `<rect x="${ox+p}" y="${oy+p}" width="${inner}" height="${inner}" rx="3" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'circle', label: 'Circle', category: 'Basic', primary: true, isLine: false,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/></svg>`,
     build: (w,h,f,s,sw) => {
       const p=sw; const iw=Math.max(1,w-p*2); const ih=Math.max(1,h-p*2);
@@ -3711,43 +4034,33 @@ const SHAPE_REGISTRY = [
     }
   },
   {
-    id: 'diamond', label: 'Diamond', isLine: false,
-    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 17,9 9,17 1,9" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    id: 'stadium', label: 'Stadium', category: 'Basic', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="5" width="14" height="8" rx="4" stroke="currentColor" stroke-width="1.5"/></svg>`,
     build: (w,h,f,s,sw) => {
-      const p=sw; const cx=w/2,cy=h/2;
-      return `<polygon points="${cx},${p} ${w-p},${cy} ${cx},${h-p} ${p},${cy}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+      const p=sw; const iw=Math.max(1,w-p*2); const ih=Math.max(1,h-p*2);
+      const rx = Math.min(iw, ih) / 2;
+      return `<rect x="${p}" y="${p}" width="${iw}" height="${ih}" rx="${rx}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
     }
   },
   {
-    id: 'triangle', label: 'Triangle', isLine: false,
-    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,2 16,16 2,16" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    id: 'semicircle', label: 'Semicircle', category: 'Basic', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 14 A6 6 0 0 1 15 14 Z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
     build: (w,h,f,s,sw) => {
-      const p=sw;
-      return `<polygon points="${w/2},${p} ${w-p},${h-p} ${p},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+      const p=sw; const rx=(w-p*2)/2, ry=(h-p*2);
+      const cy=h-p;
+      return `<path d="M ${p} ${cy} A ${rx} ${ry} 0 0 1 ${w-p} ${cy} Z" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
     }
   },
   {
-    id: 'hexagon', label: 'Hexagon', isLine: false,
-    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 16,4.5 16,13.5 9,17 2,13.5 2,4.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    id: 'ring', label: 'Ring', category: 'Basic', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="2.5" fill="none"/><circle cx="9" cy="9" r="3.5" stroke="currentColor" stroke-width="1.5" fill="#141414"/></svg>`,
     build: (w,h,f,s,sw) => {
-      const p=sw; const cx=w/2,cy=h/2; const rx=(w-p*2)/2,ry=(h-p*2)/2;
-      const pts = [0,1,2,3,4,5].map(i => {
-        const a = Math.PI/180*(60*i-30);
-        return `${cx+rx*Math.cos(a)},${cy+ry*Math.sin(a)}`;
-      }).join(' ');
-      return `<polygon points="${pts}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+      const cx=w/2, cy=h/2; const outer=Math.min(w,h)/2-sw; const inner=outer*0.55;
+      return `<path fill-rule="evenodd" d="M ${cx} ${cy-outer} A ${outer} ${outer} 0 1 1 ${cx} ${cy+outer} A ${outer} ${outer} 0 1 1 ${cx} ${cy-outer} M ${cx} ${cy-inner} A ${inner} ${inner} 0 1 0 ${cx} ${cy+inner} A ${inner} ${inner} 0 1 0 ${cx} ${cy-inner} Z" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
     }
   },
   {
-    id: 'parallelogram', label: 'Parallelogram', isLine: false,
-    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="5,3 17,3 13,15 1,15" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
-    build: (w,h,f,s,sw) => {
-      const p=sw; const off=w*0.2;
-      return `<polygon points="${off+p},${p} ${w-p},${p} ${w-off-p},${h-p} ${p},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
-    }
-  },
-  {
-    id: 'cylinder', label: 'Cylinder', isLine: false,
+    id: 'cylinder', label: 'Cylinder', category: 'Basic', primary: false, isLine: false,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><ellipse cx="9" cy="4" rx="6" ry="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 4v10" stroke="currentColor" stroke-width="1.5"/><path d="M15 4v10" stroke="currentColor" stroke-width="1.5"/><ellipse cx="9" cy="14" rx="6" ry="2.5" stroke="currentColor" stroke-width="1.5"/></svg>`,
     build: (w,h,f,s,sw) => {
       const p=sw; const ew=w-p*2; const eh=Math.min(h*0.2,30); const cy1=p+eh/2; const cy2=h-p-eh/2;
@@ -3759,7 +4072,62 @@ const SHAPE_REGISTRY = [
     }
   },
   {
-    id: 'star', label: 'Star', isLine: false,
+    id: 'triangle', label: 'Triangle', category: 'Polygons', primary: true, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,2 16,16 2,16" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw;
+      return `<polygon points="${w/2},${p} ${w-p},${h-p} ${p},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'right-triangle', label: 'Right triangle', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="3,15 3,3 15,15" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw;
+      return `<polygon points="${p},${h-p} ${w-p},${h-p} ${p},${p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'diamond', label: 'Diamond', category: 'Polygons', primary: true, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 17,9 9,17 1,9" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const cx=w/2,cy=h/2;
+      return `<polygon points="${cx},${p} ${w-p},${cy} ${cx},${h-p} ${p},${cy}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'pentagon', label: 'Pentagon', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 17,7 14,16 4,16 1,7" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => shapePolyBuild(5, w, h, f, s, sw, -90)
+  },
+  {
+    id: 'hexagon', label: 'Hexagon', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 16,4.5 16,13.5 9,17 2,13.5 2,4.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => shapePolyBuild(6, w, h, f, s, sw, -30)
+  },
+  {
+    id: 'octagon', label: 'Octagon', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="6,1 12,1 17,6 17,12 12,17 6,17 1,12 1,6" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => shapePolyBuild(8, w, h, f, s, sw, -22.5)
+  },
+  {
+    id: 'trapezoid', label: 'Trapezoid', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="5,3 13,3 16,15 2,15" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const inset=w*0.15;
+      return `<polygon points="${inset+p},${p} ${w-inset-p},${p} ${w-p},${h-p} ${p},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'parallelogram', label: 'Parallelogram', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="5,3 17,3 13,15 1,15" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const off=w*0.2;
+      return `<polygon points="${off+p},${p} ${w-p},${p} ${w-off-p},${h-p} ${p},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'star', label: 'Star', category: 'Polygons', primary: false, isLine: false,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="9,1 11,7 17,7 12,11 14,17 9,13 4,17 6,11 1,7 7,7" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
     build: (w,h,f,s,sw) => {
       const cx=w/2,cy=h/2; const outerR=Math.min(w,h)/2-sw; const innerR=outerR*0.45;
@@ -3773,13 +4141,78 @@ const SHAPE_REGISTRY = [
     }
   },
   {
-    id: 'arrow', label: 'Arrow', isLine: true,
+    id: 'cross', label: 'Cross', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M7 2h4v5h5v4h-5v5H7v-5H2V7h5V2z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const t=Math.min(w,h)*0.32; const cx=w/2, cy=h/2;
+      return `<polygon points="${cx-t/2},${p} ${cx+t/2},${p} ${cx+t/2},${cy-t/2} ${w-p},${cy-t/2} ${w-p},${cy+t/2} ${cx+t/2},${cy+t/2} ${cx+t/2},${h-p} ${cx-t/2},${h-p} ${cx-t/2},${cy+t/2} ${p},${cy+t/2} ${p},${cy-t/2} ${cx-t/2},${cy-t/2}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'heart', label: 'Heart', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 15S2 10 2 6.5a3.5 3.5 0 0 1 7 0 3.5 3.5 0 0 1 7 0C16 10 9 15 9 15z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const d = `M ${w/2} ${h*0.88} C ${w/2} ${h*0.58} ${w*0.06} ${h*0.38} ${w*0.06} ${h*0.56} C ${w*0.06} ${h*0.76} ${w/2} ${h*0.96} ${w/2} ${h*0.88} C ${w/2} ${h*0.96} ${w*0.94} ${h*0.76} ${w*0.94} ${h*0.56} C ${w*0.94} ${h*0.38} ${w/2} ${h*0.58} ${w/2} ${h*0.88} Z`;
+      return `<path d="${d}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'chevron', label: 'Chevron', category: 'Polygons', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="4,9 12,2 12,7 16,7 16,11 12,11 12,16" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const inset=h*0.25;
+      return `<polygon points="${p},${h/2} ${w-inset},${p} ${w-inset},${h*0.35} ${w-p},${h/2} ${w-inset},${h*0.65} ${w-inset},${h-p}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'cloud', label: 'Cloud', category: 'Callouts', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M5 13h9a3 3 0 0 0 .4-6 4 4 0 0 0-7.6-1.2A3 3 0 0 0 5 13z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw;
+      const d = `M ${w*0.28} ${h*0.72} C ${w*0.1} ${h*0.72} ${w*0.08} ${h*0.5} ${w*0.22} ${h*0.44} C ${w*0.2} ${h*0.28} ${w*0.38} ${h*0.18} ${w*0.52} ${h*0.26} C ${w*0.62} ${h*0.12} ${w*0.82} ${h*0.2} ${w*0.8} ${h*0.4} C ${w*0.94} ${h*0.46} ${w*0.94} ${h*0.68} ${w*0.76} ${h*0.72} Z`;
+      return `<path d="${d}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'speech-bubble', label: 'Speech bubble', category: 'Callouts', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 11l2 4 2-4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const bodyH=h*0.72;
+      return `<rect x="${p}" y="${p}" width="${w-p*2}" height="${bodyH-p}" rx="6" fill="${f}" stroke="${s}" stroke-width="${sw}"/>
+        <polygon points="${w*0.32},${bodyH} ${w*0.42},${h-p} ${w*0.52},${bodyH}" fill="${f}" stroke="${s}" stroke-width="${sw}" stroke-linejoin="round"/>`;
+    }
+  },
+  {
+    id: 'block-arrow', label: 'Block arrow', category: 'Callouts', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polygon points="2,9 9,4 9,7 16,7 16,11 9,11 9,14" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const shaft=w*0.55; const inset=h*0.25;
+      return `<polygon points="${p},${h/2} ${shaft},${inset} ${shaft},${p} ${w-p},${h/2} ${shaft},${h-p} ${shaft},${h-inset}" fill="${f}" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'frame', label: 'Frame', category: 'Misc', primary: false, isLine: false,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="5" y="5" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>`,
+    build: (w,h,f,s,sw) => {
+      const p=sw; const inset=Math.min(w,h)*0.12;
+      const outerSw = Math.max(sw, 2.5);
+      return `<rect x="${p}" y="${p}" width="${w-p*2}" height="${h-p*2}" rx="4" fill="none" stroke="${s}" stroke-width="${outerSw}"/>
+        <rect x="${inset}" y="${inset}" width="${w-inset*2}" height="${h-inset*2}" rx="2" fill="none" stroke="${s}" stroke-width="${sw}"/>`;
+    }
+  },
+  {
+    id: 'arrow', label: 'Arrow', category: 'Lines', primary: true, isLine: true,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9h14M11 4l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     build: null
   },
   {
-    id: 'line', label: 'Line', isLine: true,
+    id: 'line', label: 'Line', category: 'Lines', primary: true, isLine: true,
     icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 16L16 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    build: null
+  },
+  {
+    id: 'double-arrow', label: 'Double arrow', category: 'Lines', primary: false, isLine: true,
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 9h10M7 5L4 9l3 4M11 5l3 4-3 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     build: null
   },
 ];
@@ -3795,20 +4228,99 @@ function buildShapeSVG(type, w, h, fill, stroke, sw) {
 }
 
 // ── Build the shape picker UI from registry
+let shapeMoreOpen = false;
+let shapePickerSearch = '';
+
+function makeShapePickerBtn(shape, className) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = className + (currentShapeType === shape.id ? ' active' : '');
+  btn.id = 'sp-' + shape.id;
+  btn.dataset.shape = shape.id;
+  btn.dataset.tip = shape.label;
+  btn.innerHTML = shape.icon;
+  btn.addEventListener('click', () => setShapeType(shape.id));
+  return btn;
+}
+
+function initShapeMorePanel() {
+  const panel = document.getElementById('shape-picker-more');
+  const closeBtn = panel?.querySelector('.shape-picker-more-close');
+  if (closeBtn && !closeBtn.dataset.bound) {
+    closeBtn.dataset.bound = '1';
+    closeBtn.addEventListener('click', () => toggleShapeMorePanel(false));
+  }
+  const search = document.getElementById('shape-search');
+  if (search && !search.dataset.bound) {
+    search.dataset.bound = '1';
+    search.addEventListener('input', () => {
+      shapePickerSearch = search.value;
+      renderShapeMoreGrid();
+    });
+  }
+  renderShapeMoreGrid();
+}
+
+function toggleShapeMorePanel(forceOpen) {
+  const panel = document.getElementById('shape-picker-more');
+  if (!panel) return;
+  shapeMoreOpen = forceOpen !== undefined ? !!forceOpen : !shapeMoreOpen;
+  panel.classList.toggle('visible', shapeMoreOpen);
+  document.getElementById('sp-more')?.classList.toggle('active', shapeMoreOpen);
+  if (shapeMoreOpen) {
+    const search = document.getElementById('shape-search');
+    if (search) { search.value = ''; shapePickerSearch = ''; }
+    renderShapeMoreGrid();
+    search?.focus();
+  }
+}
+
+function renderShapeMoreGrid() {
+  const grid = document.getElementById('shape-more-grid');
+  if (!grid) return;
+  const q = shapePickerSearch.trim().toLowerCase();
+  const filtered = SHAPE_REGISTRY.filter(s => {
+    if (!q) return true;
+    return s.label.toLowerCase().includes(q)
+      || s.id.includes(q)
+      || (s.category || '').toLowerCase().includes(q);
+  });
+  grid.innerHTML = '';
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="shape-more-empty">No shapes found</div>';
+    return;
+  }
+  filtered.forEach(shape => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'shape-more-btn' + (currentShapeType === shape.id ? ' active' : '');
+    btn.dataset.shape = shape.id;
+    btn.innerHTML = `<span class="shape-more-icon">${shape.icon}</span><span class="shape-more-label">${shape.label}</span>`;
+    btn.addEventListener('click', () => {
+      setShapeType(shape.id);
+      toggleShapeMorePanel(false);
+    });
+    grid.appendChild(btn);
+  });
+}
+
 function buildShapePicker() {
   const picker = document.getElementById('shape-picker');
   if (!picker) return;
   picker.innerHTML = '';
-  SHAPE_REGISTRY.forEach((shape, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'sp-btn' + (i === 0 ? ' active' : '');
-    btn.id = 'sp-' + shape.id;
-    btn.dataset.shape = shape.id;
-    btn.dataset.tip = shape.label;
-    btn.innerHTML = shape.icon;
-    btn.addEventListener('click', () => setShapeType(shape.id));
-    picker.appendChild(btn);
+  SHAPE_REGISTRY.filter(s => s.primary).forEach(shape => {
+    picker.appendChild(makeShapePickerBtn(shape, 'sp-btn'));
   });
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
+  moreBtn.className = 'sp-btn sp-btn--more';
+  moreBtn.id = 'sp-more';
+  moreBtn.dataset.tip = 'More shapes';
+  moreBtn.setAttribute('aria-label', 'More shapes');
+  moreBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="4.5" cy="9" r="1.5" fill="currentColor"/><circle cx="9" cy="9" r="1.5" fill="currentColor"/><circle cx="13.5" cy="9" r="1.5" fill="currentColor"/></svg>`;
+  moreBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleShapeMorePanel(); });
+  picker.appendChild(moreBtn);
+  initShapeMorePanel();
 }
 
 function buildLineSVG(type, x1, y1, x2, y2, stroke, sw) {
@@ -3817,22 +4329,19 @@ function buildLineSVG(type, x1, y1, x2, y2, stroke, sw) {
   const vw = maxX-minX, vh = maxY-minY;
   const lx1=x1-minX, ly1=y1-minY, lx2=x2-minX, ly2=y2-minY;
 
-  let arrowHead = '';
-  if (type === 'arrow') {
-    arrowHead = `<defs>
-      <marker id="ah-${uid()}" viewBox="0 0 10 10" refX="9" refY="5"
-        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M1 1L9 5L1 9" fill="none" stroke="${stroke}" stroke-width="1.5"
-          stroke-linecap="round" stroke-linejoin="round"/>
-      </marker>
-    </defs>`;
-  }
-  const markerId = type === 'arrow' ? `marker-end="url(#ah-inline)"` : '';
+  const markerDef = (id) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>`;
+  const markers = [];
+  if (shapeLineHasArrowEnd(type)) markers.push(markerDef('ah-end'));
+  if (shapeLineHasArrowStart(type)) markers.push(markerDef('ah-start'));
+  const markerAttrs = [
+    shapeLineHasArrowEnd(type) ? 'marker-end="url(#ah-end)"' : '',
+    shapeLineHasArrowStart(type) ? 'marker-start="url(#ah-start)"' : '',
+  ].filter(Boolean).join(' ');
   return `<svg width="${vw}" height="${vh}" viewBox="${minX} ${minY} ${vw} ${vh}" overflow="visible" style="position:absolute;top:${minY}px;left:${minX}px">
-    ${type==='arrow' ? `<defs><marker id="ah-inline" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>` : ''}
+    ${markers.length ? `<defs>${markers.join('')}</defs>` : ''}
     <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
       stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round"
-      ${type==='arrow' ? 'marker-end="url(#ah-inline)"' : ''}/>
+      ${markerAttrs}/>
   </svg>`;
 }
 
@@ -3858,13 +4367,20 @@ function renderShapeObj(obj) {
     svg.setAttribute('viewBox', `0 0 ${vw} ${vh}`);
     svg.style.cssText='overflow:visible;pointer-events:none;';
 
-    if (obj.shapeType === 'arrow') {
-      const mid = 'ah-' + obj.id;
+    if (shapeLineHasArrowEnd(obj.shapeType) || shapeLineHasArrowStart(obj.shapeType)) {
       const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
-      defs.innerHTML = `<marker id="${mid}" viewBox="0 0 10 10" refX="9" refY="5"
-        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M1 1L9 5L1 9" fill="none" stroke="${obj.stroke||'#141414'}" stroke-width="1.5"
-          stroke-linecap="round" stroke-linejoin="round"/></marker>`;
+      const stroke = obj.stroke || '#141414';
+      const mk = (suffix) => {
+        const mid = 'ah-' + suffix + '-' + obj.id;
+        return { id: mid, html: `<marker id="${mid}" viewBox="0 0 10 10" refX="9" refY="5"
+          markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M1 1L9 5L1 9" fill="none" stroke="${stroke}" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/></marker>` };
+      };
+      let endMk, startMk;
+      if (shapeLineHasArrowEnd(obj.shapeType)) { endMk = mk('end'); }
+      if (shapeLineHasArrowStart(obj.shapeType)) { startMk = mk('start'); }
+      defs.innerHTML = [endMk?.html, startMk?.html].filter(Boolean).join('');
       svg.appendChild(defs);
     }
 
@@ -3874,7 +4390,8 @@ function renderShapeObj(obj) {
     line.setAttribute('stroke', obj.stroke||'#141414');
     line.setAttribute('stroke-width', obj.strokeWidth||2);
     line.setAttribute('stroke-linecap','round');
-    if (obj.shapeType === 'arrow') line.setAttribute('marker-end',`url(#ah-${obj.id})`);
+    if (shapeLineHasArrowEnd(obj.shapeType)) line.setAttribute('marker-end', `url(#ah-end-${obj.id})`);
+    if (shapeLineHasArrowStart(obj.shapeType)) line.setAttribute('marker-start', `url(#ah-start-${obj.id})`);
     svg.appendChild(line);
 
     // hit area (wide invisible line for easier clicking)
@@ -4204,12 +4721,11 @@ function syncLineShapeAppearance(el, obj) {
     main.setAttribute('stroke', hide ? 'transparent' : (obj.stroke || '#141414'));
     main.setAttribute('stroke-width', hide ? '0' : String(obj.strokeWidth ?? 2));
   }
-  if (obj.shapeType === 'arrow') {
-    const pth = svg.querySelector('defs marker path');
-    if (pth) {
+  if (shapeLineHasArrowEnd(obj.shapeType) || shapeLineHasArrowStart(obj.shapeType)) {
+    svg.querySelectorAll('defs marker path').forEach(pth => {
       const hide = obj.stroke === 'transparent' || obj.stroke === 'none';
       pth.setAttribute('stroke', hide ? 'transparent' : (obj.stroke || '#141414'));
-    }
+    });
   }
 }
 
@@ -4294,6 +4810,7 @@ document.addEventListener('keydown', ev => {
 whenDomReady(() => {
   initShapeToolbar();
   buildShapePicker();
+  buildStampPicker();
   initIconPicker();
   initIconToolbar();
 });
@@ -5405,27 +5922,6 @@ document.addEventListener('keydown', (ev) => {
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'd') { ev.preventDefault(); duplicateSelectedIcon(); }
 }, true);
 
-// ── Wire select tool to handle image objects
-const _origHandleSelectMousedown = handleSelectMousedown;
-handleSelectMousedown = function(e) {
-  const imageEl = e.target.closest('.image-obj');
-  if (imageEl && state.tool === 'select') {
-    const id = imageEl.dataset.objId;
-    selectImageObj(id, e.ctrlKey || e.metaKey);
-    startObjDrag(e, id);
-    return;
-  }
-  const iconEl = e.target.closest('.icon-obj');
-  if (iconEl && state.tool === 'select') {
-    const id = iconEl.dataset.objId;
-    selectIconObj(id, e.ctrlKey || e.metaKey);
-    startObjDrag(e, id);
-    return;
-  }
-  _origHandleSelectMousedown(e);
-};
-
-
 // ═══════════════════════════════════════════════════
 // TEXT TOOLBAR — font, size, style, alignment, color, highlight
 // ═══════════════════════════════════════════════════
@@ -5435,8 +5931,7 @@ const TEXT_COLORS = [
 ];
 
 const TEXT_FONTS = [
-  { label: 'Bricolage', value: "'Bricolage Grotesque', sans-serif" },
-  { label: 'Mono', value: "'JetBrains Mono', monospace" },
+  { label: 'Helvetica Neue', value: BOARD_UI_FONT },
   { label: 'Arial', value: 'Arial, sans-serif' },
   { label: 'Georgia', value: 'Georgia, serif' },
   { label: 'Times', value: "'Times New Roman', serif" },
@@ -5457,7 +5952,7 @@ const currentTextStyle = {
   fontSize: 18,
   fontWeight: '500',
   fontStyle: 'normal',
-  fontFamily: "'Bricolage Grotesque', sans-serif",
+  fontFamily: BOARD_UI_FONT,
   textAlign: 'left',
   textDecoration: 'none',
   color: '#141414',
@@ -5915,8 +6410,7 @@ function getBoardBounds() {
         minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
         maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
       });
-    } else if (obj.type === 'shape' &&
-              (obj.shapeType==='arrow' || obj.shapeType==='line')) {
+    } else if (obj.type === 'shape' && shapeIsLine(obj.shapeType)) {
       expand(
         Math.min(obj.x, obj.x2||0),
         Math.min(obj.y, obj.y2||0),
@@ -5992,7 +6486,7 @@ async function drawBoardToCanvas(bounds, pad, scale) {
       ctx.stroke();
 
     } else if (obj.type === 'text') {
-      const fontFamily = obj.fontFamily || "'Bricolage Grotesque', sans-serif";
+      const fontFamily = obj.fontFamily || BOARD_UI_FONT;
       const fontSize = ts(obj.fontSize || 18);
       const padX = ts(6);
       const padY = ts(3);
@@ -6047,7 +6541,7 @@ async function drawBoardToCanvas(bounds, pad, scale) {
       ctx.fill();
       // text
       ctx.fillStyle = obj.color === 'charcoal' ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.75)';
-      ctx.font = `500 ${ts(14)}px 'Bricolage Grotesque', sans-serif`;
+      ctx.font = `500 ${ts(14)}px ${BOARD_UI_FONT}`;
       ctx.textBaseline = 'top';
       const stickyLines = (obj.text||'').split('\n');
       stickyLines.forEach((line, i) => {
@@ -6092,18 +6586,19 @@ async function drawBoardToCanvas(bounds, pad, scale) {
       }
 
     } else if (obj.type === 'shape') {
-      const isLine = obj.shapeType === 'arrow' || obj.shapeType === 'line';
+      const isLine = shapeIsLine(obj.shapeType);
       if (isLine) {
+        const x1 = tx(obj.x), y1 = ty(obj.y), x2 = tx(obj.x2 || obj.x), y2 = ty(obj.y2 || obj.y);
         ctx.beginPath();
         ctx.strokeStyle = obj.stroke || '#141414';
         ctx.lineWidth   = ts(obj.strokeWidth || 2);
         ctx.lineCap     = 'round';
-        ctx.moveTo(tx(obj.x), ty(obj.y));
-        ctx.lineTo(tx(obj.x2||obj.x), ty(obj.y2||obj.y));
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
         ctx.stroke();
-        if (obj.shapeType === 'arrow') {
-          drawArrowHead(ctx, tx(obj.x), ty(obj.y), tx(obj.x2||obj.x), ty(obj.y2||obj.y), obj.stroke||'#141414', ts(obj.strokeWidth||2));
-        }
+        const sw = ts(obj.strokeWidth || 2);
+        if (shapeLineHasArrowEnd(obj.shapeType)) drawArrowHead(ctx, x1, y1, x2, y2, obj.stroke || '#141414', sw);
+        if (shapeLineHasArrowStart(obj.shapeType)) drawArrowHead(ctx, x2, y2, x1, y1, obj.stroke || '#141414', sw);
       } else {
         const x=tx(obj.x), y=ty(obj.y), w=ts(obj.w||100), h=ts(obj.h||80);
         const f = obj.fill || '#fbfbfb';
@@ -6113,12 +6608,15 @@ async function drawBoardToCanvas(bounds, pad, scale) {
         ctx.strokeStyle = s;
         ctx.lineWidth   = sw;
         drawShapeOnCtx(ctx, obj.shapeType, x, y, w, h);
-        if (f !== 'transparent' && f !== 'none') ctx.fill();
+        if (f !== 'transparent' && f !== 'none') {
+          if (obj.shapeType === 'ring') ctx.fill('evenodd');
+          else ctx.fill();
+        }
         ctx.stroke();
         // label
         if (obj.label) {
           ctx.fillStyle   = f === '#141414' ? '#fbfbfb' : '#141414';
-          ctx.font        = `600 ${ts(13)}px 'Bricolage Grotesque', sans-serif`;
+          ctx.font        = `600 ${ts(13)}px ${BOARD_UI_FONT}`;
           ctx.textAlign   = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(obj.label, x + w/2, y + h/2);
@@ -6142,22 +6640,107 @@ function roundRectPath(ctx, x, y, w, h, r) {
 
 function drawShapeOnCtx(ctx, type, x, y, w, h) {
   ctx.beginPath();
-  if (type==='rect')      { ctx.roundRect ? ctx.roundRect(x,y,w,h,4) : ctx.rect(x,y,w,h); }
-  else if (type==='circle')   { ctx.ellipse(x+w/2, y+h/2, w/2, h/2, 0, 0, Math.PI*2); }
-  else if (type==='diamond')  { ctx.moveTo(x+w/2,y); ctx.lineTo(x+w,y+h/2); ctx.lineTo(x+w/2,y+h); ctx.lineTo(x,y+h/2); ctx.closePath(); }
-  else if (type==='triangle') { ctx.moveTo(x+w/2,y); ctx.lineTo(x+w,y+h); ctx.lineTo(x,y+h); ctx.closePath(); }
-  else if (type==='hexagon')  {
-    const cx=x+w/2,cy=y+h/2,rx=w/2,ry=h/2;
-    for(let i=0;i<6;i++){const a=Math.PI/180*(60*i-30);i===0?ctx.moveTo(cx+rx*Math.cos(a),cy+ry*Math.sin(a)):ctx.lineTo(cx+rx*Math.cos(a),cy+ry*Math.sin(a));}
+  if (type === 'rect' || type === 'rounded-rect') {
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, type === 'rounded-rect' ? Math.min(16, w / 4, h / 4) : 4);
+    else ctx.rect(x, y, w, h);
+  } else if (type === 'square') {
+    const side = Math.min(w, h); const ox = x + (w - side) / 2, oy = y + (h - side) / 2;
+    if (ctx.roundRect) ctx.roundRect(ox, oy, side, side, 3); else ctx.rect(ox, oy, side, side);
+  } else if (type === 'circle' || type === 'stadium') {
+    if (type === 'stadium' && ctx.roundRect) {
+      const r = Math.min(w, h) / 2;
+      ctx.roundRect(x, y, w, h, r);
+    } else {
+      ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    }
+  } else if (type === 'semicircle') {
+    ctx.moveTo(x, y + h);
+    ctx.ellipse(x + w / 2, y + h, w / 2, h, 0, Math.PI, 0, true);
     ctx.closePath();
-  }
-  else if (type==='parallelogram') { const off=w*0.2; ctx.moveTo(x+off,y); ctx.lineTo(x+w,y); ctx.lineTo(x+w-off,y+h); ctx.lineTo(x,y+h); ctx.closePath(); }
-  else if (type==='star') {
-    const cx=x+w/2,cy=y+h/2,outerR=Math.min(w,h)/2,innerR=outerR*0.45;
-    for(let i=0;i<10;i++){const a=Math.PI/180*(36*i-90),r=i%2===0?outerR:innerR;i===0?ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a)):ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}
+  } else if (type === 'ring') {
+    const cx = x + w / 2, cy = y + h / 2, outer = Math.min(w, h) / 2, inner = outer * 0.55;
+    ctx.ellipse(cx, cy, outer, outer, 0, 0, Math.PI * 2);
+    ctx.moveTo(cx + inner, cy);
+    ctx.ellipse(cx, cy, inner, inner, 0, 0, Math.PI * 2, true);
+  } else if (type === 'cylinder') {
+    const eh = Math.min(h * 0.2, 30);
+    const cy1 = y + eh / 2, cy2 = y + h - eh / 2;
+    ctx.rect(x, cy1, w, cy2 - cy1);
+    ctx.ellipse(x + w / 2, cy1, w / 2, eh / 2, 0, 0, Math.PI * 2);
+    ctx.ellipse(x + w / 2, cy2, w / 2, eh / 2, 0, 0, Math.PI * 2);
+    ctx.moveTo(x, cy1); ctx.lineTo(x, cy2);
+    ctx.moveTo(x + w, cy1); ctx.lineTo(x + w, cy2);
+  } else if (type === 'diamond') {
+    ctx.moveTo(x + w / 2, y); ctx.lineTo(x + w, y + h / 2);
+    ctx.lineTo(x + w / 2, y + h); ctx.lineTo(x, y + h / 2); ctx.closePath();
+  } else if (type === 'triangle') {
+    ctx.moveTo(x + w / 2, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+  } else if (type === 'right-triangle') {
+    ctx.moveTo(x, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y); ctx.closePath();
+  } else if (type === 'pentagon') drawShapePolyOnCtx(ctx, x, y, w, h, 5, -90);
+  else if (type === 'hexagon') drawShapePolyOnCtx(ctx, x, y, w, h, 6, -30);
+  else if (type === 'octagon') drawShapePolyOnCtx(ctx, x, y, w, h, 8, -22.5);
+  else if (type === 'trapezoid') {
+    const inset = w * 0.15;
+    ctx.moveTo(x + inset, y); ctx.lineTo(x + w - inset, y);
+    ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+  } else if (type === 'parallelogram') {
+    const off = w * 0.2;
+    ctx.moveTo(x + off, y); ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w - off, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+  } else if (type === 'star') {
+    const cx = x + w / 2, cy = y + h / 2, outerR = Math.min(w, h) / 2, innerR = outerR * 0.45;
+    for (let i = 0; i < 10; i++) {
+      const a = Math.PI / 180 * (36 * i - 90), r = i % 2 === 0 ? outerR : innerR;
+      if (i === 0) ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+      else ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    }
     ctx.closePath();
-  }
-  else { ctx.rect(x,y,w,h); }
+  } else if (type === 'cross') {
+    const t = Math.min(w, h) * 0.32, cx = x + w / 2, cy = y + h / 2;
+    ctx.moveTo(cx - t / 2, y); ctx.lineTo(cx + t / 2, y); ctx.lineTo(cx + t / 2, cy - t / 2);
+    ctx.lineTo(x + w, cy - t / 2); ctx.lineTo(x + w, cy + t / 2); ctx.lineTo(cx + t / 2, cy + t / 2);
+    ctx.lineTo(cx + t / 2, y + h); ctx.lineTo(cx - t / 2, y + h); ctx.lineTo(cx - t / 2, cy + t / 2);
+    ctx.lineTo(x, cy + t / 2); ctx.lineTo(x, cy - t / 2); ctx.lineTo(cx - t / 2, cy - t / 2); ctx.closePath();
+  } else if (type === 'heart') {
+    const mx = x + w / 2, my = y + h * 0.88;
+    ctx.moveTo(mx, my);
+    ctx.bezierCurveTo(mx, y + h * 0.58, x + w * 0.06, y + h * 0.38, x + w * 0.06, y + h * 0.56);
+    ctx.bezierCurveTo(x + w * 0.06, y + h * 0.76, mx, y + h * 0.96, mx, my);
+    ctx.bezierCurveTo(mx, y + h * 0.96, x + w * 0.94, y + h * 0.76, x + w * 0.94, y + h * 0.56);
+    ctx.bezierCurveTo(x + w * 0.94, y + h * 0.38, mx, y + h * 0.58, mx, my);
+    ctx.closePath();
+  } else if (type === 'chevron') {
+    const inset = h * 0.25;
+    ctx.moveTo(x, y + h / 2); ctx.lineTo(x + w - inset, y);
+    ctx.lineTo(x + w - inset, y + h * 0.35); ctx.lineTo(x + w, y + h / 2);
+    ctx.lineTo(x + w - inset, y + h * 0.65); ctx.lineTo(x + w - inset, y + h); ctx.closePath();
+  } else if (type === 'cloud') {
+    ctx.moveTo(x + w * 0.28, y + h * 0.72);
+    ctx.bezierCurveTo(x + w * 0.1, y + h * 0.72, x + w * 0.08, y + h * 0.5, x + w * 0.22, y + h * 0.44);
+    ctx.bezierCurveTo(x + w * 0.2, y + h * 0.28, x + w * 0.38, y + h * 0.18, x + w * 0.52, y + h * 0.26);
+    ctx.bezierCurveTo(x + w * 0.62, y + h * 0.12, x + w * 0.82, y + h * 0.2, x + w * 0.8, y + h * 0.4);
+    ctx.bezierCurveTo(x + w * 0.94, y + h * 0.46, x + w * 0.94, y + h * 0.68, x + w * 0.76, y + h * 0.72);
+    ctx.closePath();
+  } else if (type === 'speech-bubble') {
+    const bodyH = y + h * 0.72;
+    if (ctx.roundRect) ctx.roundRect(x, y, w, bodyH - y, 6);
+    else { ctx.rect(x, y, w, bodyH - y); }
+    ctx.moveTo(x + w * 0.32, bodyH); ctx.lineTo(x + w * 0.42, y + h); ctx.lineTo(x + w * 0.52, bodyH); ctx.closePath();
+  } else if (type === 'block-arrow') {
+    const shaft = x + w * 0.55, inset = h * 0.25;
+    ctx.moveTo(x, y + h / 2); ctx.lineTo(shaft, y + inset); ctx.lineTo(shaft, y);
+    ctx.lineTo(x + w, y + h / 2); ctx.lineTo(shaft, y + h); ctx.lineTo(shaft, y + h - inset); ctx.closePath();
+  } else if (type === 'frame') {
+    const inset = Math.min(w, h) * 0.12;
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, 4); else ctx.rect(x, y, w, h);
+    ctx.moveTo(x + inset + 2, y + inset); ctx.lineTo(x + inset, y + inset);
+    ctx.lineTo(x + inset, y + inset + 2);
+    ctx.moveTo(x + w - inset, y + inset); ctx.lineTo(x + w - inset, y + inset + 2);
+    ctx.lineTo(x + w - inset - 2, y + inset);
+    if (ctx.roundRect) { ctx.roundRect(x + inset, y + inset, w - inset * 2, h - inset * 2, 2); }
+    else { ctx.rect(x + inset, y + inset, w - inset * 2, h - inset * 2); }
+  } else { ctx.rect(x, y, w, h); }
 }
 
 function drawArrowHead(ctx, x1, y1, x2, y2, color, lw) {
@@ -6652,22 +7235,31 @@ function drawMinimap() {
       } catch(e) {}
 
     } else if (obj.type === 'shape') {
-      const isLine = obj.shapeType==='arrow'||obj.shapeType==='line';
+      const isLine = shapeIsLine(obj.shapeType);
       if (isLine) {
+        const x1 = wx(obj.x), y1 = wy(obj.y), x2 = wx(obj.x2 || obj.x), y2 = wy(obj.y2 || obj.y);
         mmCtx.beginPath();
         mmCtx.strokeStyle = obj.stroke || '#141414';
-        mmCtx.lineWidth   = Math.max(0.8, ws(obj.strokeWidth||2));
+        mmCtx.lineWidth   = Math.max(0.8, ws(obj.strokeWidth || 2));
         mmCtx.lineCap     = 'round';
-        mmCtx.moveTo(wx(obj.x), wy(obj.y));
-        mmCtx.lineTo(wx(obj.x2||obj.x), wy(obj.y2||obj.y));
+        mmCtx.moveTo(x1, y1);
+        mmCtx.lineTo(x2, y2);
         mmCtx.stroke();
-        if (obj.shapeType==='arrow') {
-          const angle = Math.atan2((obj.y2||0)-obj.y, (obj.x2||0)-obj.x);
-          const sz = Math.max(3, ws(8));
+        const sz = Math.max(3, ws(8));
+        if (shapeLineHasArrowEnd(obj.shapeType)) {
+          const angle = Math.atan2(y2 - y1, x2 - x1);
           mmCtx.beginPath();
-          mmCtx.moveTo(wx(obj.x2||obj.x)-sz*Math.cos(angle-0.4), wy(obj.y2||obj.y)-sz*Math.sin(angle-0.4));
-          mmCtx.lineTo(wx(obj.x2||obj.x), wy(obj.y2||obj.y));
-          mmCtx.lineTo(wx(obj.x2||obj.x)-sz*Math.cos(angle+0.4), wy(obj.y2||obj.y)-sz*Math.sin(angle+0.4));
+          mmCtx.moveTo(x2 - sz * Math.cos(angle - 0.4), y2 - sz * Math.sin(angle - 0.4));
+          mmCtx.lineTo(x2, y2);
+          mmCtx.lineTo(x2 - sz * Math.cos(angle + 0.4), y2 - sz * Math.sin(angle + 0.4));
+          mmCtx.stroke();
+        }
+        if (shapeLineHasArrowStart(obj.shapeType)) {
+          const angle = Math.atan2(y1 - y2, x1 - x2);
+          mmCtx.beginPath();
+          mmCtx.moveTo(x1 - sz * Math.cos(angle - 0.4), y1 - sz * Math.sin(angle - 0.4));
+          mmCtx.lineTo(x1, y1);
+          mmCtx.lineTo(x1 - sz * Math.cos(angle + 0.4), y1 - sz * Math.sin(angle + 0.4));
           mmCtx.stroke();
         }
       } else {
@@ -6675,15 +7267,12 @@ function drawMinimap() {
         mmCtx.fillStyle   = f==='transparent'||f==='none' ? 'rgba(0,0,0,0)' : f;
         mmCtx.strokeStyle = s;
         mmCtx.lineWidth   = Math.max(0.5, ws(obj.strokeWidth||1.5));
-        mmCtx.beginPath();
         const x=wx(obj.x), y=wy(obj.y), w=ws(obj.w||80), h=ws(obj.h||60);
-        if (obj.shapeType==='circle') { mmCtx.ellipse(x+w/2,y+h/2,w/2,h/2,0,0,Math.PI*2); }
-        else if (obj.shapeType==='diamond') {
-          mmCtx.moveTo(x+w/2,y); mmCtx.lineTo(x+w,y+h/2);
-          mmCtx.lineTo(x+w/2,y+h); mmCtx.lineTo(x,y+h/2); mmCtx.closePath();
+        drawShapeOnCtx(mmCtx, obj.shapeType, x, y, w, h);
+        if (f!=='transparent'&&f!=='none') {
+          if (obj.shapeType === 'ring') mmCtx.fill('evenodd');
+          else mmCtx.fill();
         }
-        else { mmCtx.rect(x,y,w,h); }
-        if (f!=='transparent'&&f!=='none') mmCtx.fill();
         mmCtx.stroke();
       }
     }
@@ -7884,7 +8473,7 @@ async function renderAiObjects(objects) {
         fontSize: obj.fontSize || 18,
         fontWeight: obj.fontWeight || '500',
         fontStyle: obj.fontStyle || 'normal',
-        fontFamily: obj.fontFamily || "'Bricolage Grotesque', sans-serif",
+        fontFamily: obj.fontFamily || BOARD_UI_FONT,
         textAlign: obj.textAlign || 'left',
         textDecoration: obj.textDecoration || 'none',
         color: obj.color || '#141414',
@@ -7894,7 +8483,7 @@ async function renderAiObjects(objects) {
       addTextToCanvas(tObj);
 
     } else if (obj.type === 'shape') {
-      const isLine = obj.shapeType === 'arrow' || obj.shapeType === 'line';
+      const isLine = shapeIsLine(obj.shapeType);
       const sObj = isLine ? {
         id, type: 'shape',
         shapeType: obj.shapeType,
@@ -8697,6 +9286,7 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   pullLatestBoardStateFromSupabase();
   if (activityPanelOpen) renderActivityPanel();
   ensureIconPickerReady();
+  buildStampPicker();
   initIconToolbar();
 };
 
@@ -8741,5 +9331,9 @@ Object.assign(window, {
   toggleGrid,
   saveBoardName,
   closeAllPanels,
+  jumpToParticipant,
+  startFollowingParticipant,
+  stopFollowingParticipant,
+  returnToOwnViewport,
 });
 

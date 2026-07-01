@@ -45,6 +45,9 @@ html,body{width:100%;height:100%;overflow:hidden}
   --bottom-toolbar-bottom:20px;
   --bottom-toolbar-height:76px;
   --tool-panel-bottom:calc(var(--bottom-toolbar-bottom) + var(--bottom-toolbar-height) + 16px);
+
+  /* pen tool — nib hotspot at tip (4, 20) */
+  --cursor-pen:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M4 20.5l1.8-.9L16.2 8.2l-2.1-2.1L3.7 17.5l-.7 3z' fill='%23f2541d' stroke='%23141414' stroke-width='1.1' stroke-linejoin='round'/%3E%3Cpath d='M14.8 5.3l2.1 2.1 1.8-1.8a1.2 1.2 0 0 0 0-1.7l-.4-.4a1.2 1.2 0 0 0-1.7 0l-1.8 1.8z' fill='%23fbfbfb' stroke='%23141414' stroke-width='1.1' stroke-linejoin='round'/%3E%3C/svg%3E") 4 20, crosshair;
 }
 
 /* ── BODY ── */
@@ -116,6 +119,7 @@ body{
   --tb-surface-hover:rgba(20,20,20,0.08);
   --tb-teal-soft:rgba(46,157,145,0.12);
   --tb-teal-soft-hover:rgba(46,157,145,0.18);
+  --board-topbar-h:44px;
 
   position:fixed;
   top:12px;
@@ -123,8 +127,11 @@ body{
   display:flex;
   align-items:center;
   gap:8px;
-  min-height:44px;
-  padding:6px 10px;
+  height:var(--board-topbar-h);
+  min-height:var(--board-topbar-h);
+  max-height:var(--board-topbar-h);
+  padding:0 10px;
+  box-sizing:border-box;
   background:#fff;
   border:1px solid var(--tb-border);
   border-radius:10px;
@@ -133,7 +140,7 @@ body{
   color:var(--tb-text);
 }
 .board-float-bar--left{left:12px;max-width:min(420px,calc(100vw - 24px))}
-.board-float-bar--right{right:12px;max-width:min(560px,calc(100vw - 24px));flex-wrap:nowrap}
+.board-float-bar--right{right:12px;max-width:min(560px,calc(100vw - 24px));flex-wrap:nowrap;overflow:visible}
 
 .tb-logo{
   display:flex;
@@ -148,8 +155,8 @@ body{
   object-position:left center;
 }
 .lp-brand-logo--topbar{
-  height:28px;
-  width:28px;
+  height:26px;
+  width:26px;
   flex-shrink:0;
   object-fit:contain;
   object-position:center;
@@ -199,7 +206,9 @@ body{
   font-size:14px;
   font-weight:600;
   color:var(--tb-text);
-  padding:4px 8px;
+  padding:0 8px;
+  height:32px;
+  line-height:32px;
   border-radius:var(--radius-sm);
   cursor:text;
   outline:none;
@@ -226,7 +235,8 @@ body{
 
 .tb-btn{
   display:flex;align-items:center;gap:6px;
-  padding:6px 10px;
+  height:32px;
+  padding:0 10px;
   border-radius:8px;
   border:none;
   background:transparent;
@@ -244,7 +254,7 @@ body{
   color:var(--tb-text);
 }
 .board-float-bar .tb-btn-primary{
-  padding:7px 14px;
+  padding:0 14px;
 }
 .tb-btn-primary{
   background:var(--teal);
@@ -274,7 +284,7 @@ body{
 .tb-btn-session.visible{display:inline-flex}
 
 .tb-avatar{
-  width:30px;height:30px;
+  width:28px;height:28px;
   border-radius:50%;
   background:var(--blue);
   display:flex;align-items:center;justify-content:center;
@@ -907,7 +917,11 @@ body.read-only-mode #canvas-world > *{
 body.tool-hand #canvas-root{cursor:grab}
 body.tool-hand.panning #canvas-root{cursor:grabbing}
 body.tool-select #canvas-root{cursor:default}
-body.tool-pen #canvas-root{cursor:crosshair}
+body.tool-pen #canvas-root,
+body.tool-pen #canvas-root *{cursor:var(--cursor-pen)}
+body.tool-pen.pen-drawing,
+body.tool-pen.pen-drawing #canvas-root,
+body.tool-pen.pen-drawing #canvas-root *{cursor:var(--cursor-pen) !important}
 body.tool-text #canvas-root{cursor:text}
 body.tool-shape #canvas-root{cursor:crosshair}
 body.tool-sticky #canvas-root{cursor:cell}
@@ -2188,17 +2202,21 @@ body.tool-eraser #eraser-cursor{display:block}
    MINI-MAP — STEP 7
 ══════════════════════════════════════ */
 #minimap-wrap {
-  position: fixed;
-  top: calc(100vh - 180px);
-  left: 72px;
-  z-index: 100;
+  position: relative;
+  top: auto;
+  left: auto;
+  z-index: 1;
+  flex-shrink: 0;
   touch-action: none;
+}
+#minimap-wrap.minimap-floating {
+  position: fixed;
+  z-index: 110;
 }
 
 #minimap {
   position: absolute;
   left: 0;
-  bottom: calc(100% + 5px);
   width: 200px;
   height: 130px;
   background: #1a1a22;
@@ -2208,6 +2226,15 @@ body.tool-eraser #eraser-cursor{display:block}
   cursor: pointer;
   box-shadow: 0 4px 20px rgba(0,0,0,0.4);
   transition: opacity .2s;
+}
+#minimap-wrap:not(.minimap-floating) #minimap,
+#minimap-wrap.minimap-floating.minimap-below #minimap {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+#minimap-wrap.minimap-floating:not(.minimap-below) #minimap {
+  bottom: calc(100% + 6px);
+  top: auto;
 }
 #minimap:hover { border-color: rgba(255,255,255,0.22); }
 #minimap.hidden { display: none; }
@@ -2233,17 +2260,44 @@ body.tool-eraser #eraser-cursor{display:block}
 /* toggle button — drag handle; anchor point for the minimap widget */
 #minimap-toggle {
   margin: 0;
-  padding: 4px 10px;
+  padding: 0 10px;
+  height: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #141414;
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 6px;
-  color: rgba(251,251,251,0.4);
-  font-size: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  color: rgba(251,251,251,0.55);
+  font-size: 12px;
+  font-weight: 500;
   font-family:var(--font);
   cursor: grab;
   user-select: none;
-  transition: color .15s, border-color .15s, box-shadow .15s;
-  letter-spacing: 0.5px;
+  transition: color .15s, border-color .15s, box-shadow .15s, background .15s;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+/* In top bar — match other pill controls */
+.board-float-bar #minimap-wrap:not(.minimap-floating) #minimap-toggle {
+  background: var(--tb-surface);
+  border: 1px solid var(--tb-border);
+  color: var(--tb-text-muted);
+}
+.board-float-bar #minimap-wrap:not(.minimap-floating) #minimap-toggle:hover {
+  background: var(--tb-surface-hover);
+  border-color: var(--tb-border-strong);
+  color: var(--tb-text);
+}
+#minimap-wrap.minimap-floating #minimap-toggle {
+  padding: 0 14px;
+  height: 36px;
+  min-height: 36px;
+  background: #141414;
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(251,251,251,0.55);
 }
 #minimap-toggle:hover {
   color: rgba(251,251,251,0.7);
@@ -2285,6 +2339,7 @@ body.tool-eraser #eraser-cursor{display:block}
   box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   animation: popIn .18s cubic-bezier(0.34,1.56,0.64,1);
   pointer-events: all;
+  overflow: visible;
 }
 @keyframes popIn {
   from { opacity:0; transform:scale(0.85) translateY(4px); }

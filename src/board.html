@@ -313,16 +313,6 @@
   </div>
 </div>
 
-<!-- MINI-MAP -->
-<div id="minimap-wrap">
-  <button id="minimap-toggle" type="button" title="Drag to reposition · click to show/hide map">▲ hide map</button>
-  <div id="minimap" title="Click to navigate">
-    <canvas id="minimap-canvas"></canvas>
-    <div id="minimap-viewport"></div>
-    <div id="minimap-label">OVERVIEW</div>
-  </div>
-</div>
-
 <!-- SHAPE RECOGNITION POPUP -->
 <div id="shape-convert-popup"></div>
 
@@ -502,6 +492,14 @@
 </div>
 
 <div id="board-bar-right" class="board-float-bar board-float-bar--right">
+  <div id="minimap-wrap">
+    <button id="minimap-toggle" type="button" title="Drag to reposition · click to show/hide map">▲ hide map</button>
+    <div id="minimap" title="Click to navigate">
+      <canvas id="minimap-canvas"></canvas>
+      <div id="minimap-viewport"></div>
+      <div id="minimap-label">OVERVIEW</div>
+    </div>
+  </div>
   <button class="tb-btn" onclick="toggleShortcuts()">
     <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="5" y="1" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="9" y="1" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="1" y="5" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="5" y="5" width="3" height="3" rx="1" fill="currentColor"/><rect x="9" y="5" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="1" y="9" width="3" height="3" rx="1" fill="currentColor" opacity=".6"/><rect x="5" y="9" width="7" height="3" rx="1" fill="currentColor" opacity=".6"/></svg>
     Shortcuts

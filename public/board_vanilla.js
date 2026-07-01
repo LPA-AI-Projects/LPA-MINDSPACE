@@ -990,11 +990,14 @@ function startStroke(e) {
   currentPoints.push(wp);
 
   const svg = getDrawingSvg();
-  if (!svg) return;
+  if (!svg) {
+    state.isDrawing = false;
+    return;
+  }
+  document.body.classList.add('pen-drawing');
   strokeSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   configureStrokePath(strokeSvgEl, penState);
-  strokeSvgEl.setAttribute('pointer-events', 'stroke');
-  strokeSvgEl.style.cursor = 'pointer';
+  strokeSvgEl.setAttribute('pointer-events', 'none');
   svg.appendChild(strokeSvgEl);
 }
 
@@ -1008,6 +1011,7 @@ function continueStroke(e) {
 function endStroke() {
   if (!state.isDrawing) return;
   state.isDrawing = false;
+  document.body.classList.remove('pen-drawing');
   if (currentPoints.length < 2) {
     strokeSvgEl?.remove();
     returnToSelectTool();
@@ -1296,7 +1300,6 @@ function endErase() {
     state.erasedSomething = false;
   }
   state.isErasing = false;
-  returnToSelectTool();
 }
 
 // ═══════════════════════════════════════════════════
@@ -3371,6 +3374,44 @@ function hideSelToolbar() {
     popup.style.display = 'none';
   }
 }
+
+let selectionToolbarsSuppressedForDrag = false;
+
+function hideSelectionToolbarsForDrag() {
+  if (selectionToolbarsSuppressedForDrag) return;
+  selectionToolbarsSuppressedForDrag = true;
+  selToolbar?.classList.remove('visible');
+  document.getElementById('shape-toolbar')?.classList.remove('visible');
+  document.getElementById('text-toolbar')?.classList.remove('visible');
+  document.getElementById('image-toolbar')?.classList.remove('visible');
+  document.getElementById('icon-toolbar')?.classList.remove('visible');
+  if (typeof hideAllTtbMenus === 'function') hideAllTtbMenus();
+  const popup = document.getElementById('sel-ai-popup');
+  if (popup) {
+    popup.classList.remove('is-open');
+    popup.style.display = 'none';
+  }
+}
+
+function restoreSelectionToolbarsAfterDrag() {
+  if (!selectionToolbarsSuppressedForDrag) return;
+  selectionToolbarsSuppressedForDrag = false;
+  if (selectedIds.size === 0) return;
+
+  if (selectedIds.size === 1) {
+    const id = [...selectedIds][0];
+    const obj = state.objects.find((o) => o.id === id);
+    const el = document.querySelector(`[data-obj-id="${id}"]`);
+    if (obj?.type === 'shape' && el) showShapeToolbar(el);
+    else if (obj?.type === 'image' && el) showImageToolbar(el);
+    else if (obj?.type === 'icon' && el) showIconToolbar(el);
+    else if (obj?.type === 'text' && el) showTextToolbar(el);
+    else updateSelToolbar();
+  } else {
+    updateSelToolbar();
+  }
+}
+
 function showSelToolbar() {
   if (selectedIds.size > 0 && selToolbar) selToolbar.classList.add('visible');
 }
@@ -3503,7 +3544,10 @@ function startObjDrag(e, clickedId) {
   function onMove(ev) {
     const dx = (ev.clientX - startMouseX) / state.zoom;
     const dy = (ev.clientY - startMouseY) / state.zoom;
-    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) moved = true;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      moved = true;
+      hideSelectionToolbarsForDrag();
+    }
 
     selectedIds.forEach(id => {
       const obj = state.objects.find(o => o.id === id);
@@ -3534,16 +3578,10 @@ function startObjDrag(e, clickedId) {
         if (el) { el.style.left = obj.x + 'px'; el.style.top = obj.y + 'px'; }
       }
     });
-    positionSelToolbar();
-    if (selectedIconId && selectedIds.size === 1 && selectedIds.has(selectedIconId)) {
-      const iconEl = document.querySelector(`.icon-obj[data-obj-id="${selectedIconId}"]`);
-      if (iconEl && document.getElementById('icon-toolbar')?.classList.contains('visible')) {
-        showIconToolbar(iconEl);
-      }
-    }
   }
 
   function onUp(ev) {
+    restoreSelectionToolbarsAfterDrag();
     selectedIds.forEach(id => {
       const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
       if (el) el.classList.remove('dragging');
@@ -7011,7 +7049,7 @@ function triggerImportJSON() {
 
 const MM_W = 200, MM_H = 130;     // minimap display size in px
 const MM_UPDATE_MS = 80;           // throttle render interval
-const MM_POS_KEY = 'lp-minimap-pos';
+const MM_POS_KEY = 'lp-minimap-pos-v3';
 let mmVisible  = true;
 let mmDragging = false;
 let mmWrapDragging = false;
@@ -7049,6 +7087,28 @@ function applyMinimapWrapPosition(left, top) {
   const clampedTop = Math.max(58, Math.min(top, maxTop));
   mmWrap.style.left = `${Math.round(clampedLeft)}px`;
   mmWrap.style.top = `${Math.round(clampedTop)}px`;
+  mmWrap.classList.toggle('minimap-below', clampedTop < window.innerHeight * 0.45);
+}
+
+function dockMinimapInBar() {
+  if (!mmWrap) return;
+  const bar = document.getElementById('board-bar-right');
+  if (!bar) return;
+  mmWrap.classList.remove('minimap-floating', 'minimap-below');
+  mmWrap.style.left = '';
+  mmWrap.style.top = '';
+  if (mmWrap.parentElement !== bar) {
+    bar.insertBefore(mmWrap, bar.firstChild);
+  }
+}
+
+function floatMinimapAt(left, top) {
+  if (!mmWrap) return;
+  if (mmWrap.parentElement !== document.body) {
+    document.body.appendChild(mmWrap);
+  }
+  mmWrap.classList.add('minimap-floating');
+  applyMinimapWrapPosition(left, top);
 }
 
 function initMinimapPosition() {
@@ -7056,22 +7116,22 @@ function initMinimapPosition() {
   try {
     const saved = localStorage.getItem(MM_POS_KEY);
     if (saved) {
-      const { left, top } = JSON.parse(saved);
-      if (Number.isFinite(left) && Number.isFinite(top)) {
-        applyMinimapWrapPosition(left, top);
+      const parsed = JSON.parse(saved);
+      if (parsed.floating && Number.isFinite(parsed.left) && Number.isFinite(parsed.top)) {
+        floatMinimapAt(parsed.left, parsed.top);
         return;
       }
     }
   } catch (e) { /* ignore */ }
-  applyMinimapWrapPosition(72, window.innerHeight - mmWrap.offsetHeight - 16);
+  dockMinimapInBar();
 }
 
 function saveMinimapPosition() {
-  if (!mmWrap) return;
-  const left = parseFloat(mmWrap.style.left) || 72;
+  if (!mmWrap || !mmWrap.classList.contains('minimap-floating')) return;
+  const left = parseFloat(mmWrap.style.left) || 0;
   const top = parseFloat(mmWrap.style.top) || 0;
   try {
-    localStorage.setItem(MM_POS_KEY, JSON.stringify({ left, top }));
+    localStorage.setItem(MM_POS_KEY, JSON.stringify({ floating: true, left, top }));
   } catch (e) { /* ignore */ }
 }
 
@@ -7082,6 +7142,9 @@ if (mmToggle) {
     mmWrapDragging = true;
     mmWrapDidMove = false;
     const rect = mmWrap.getBoundingClientRect();
+    if (!mmWrap.classList.contains('minimap-floating')) {
+      floatMinimapAt(rect.left, rect.top);
+    }
     mmWrapDragStart = {
       x: e.clientX,
       y: e.clientY,
@@ -7103,8 +7166,8 @@ if (mmToggle) {
 }
 
 window.addEventListener('resize', () => {
-  if (!mmWrap) return;
-  applyMinimapWrapPosition(parseFloat(mmWrap.style.left) || 72, parseFloat(mmWrap.style.top) || 0);
+  if (!mmWrap || !mmWrap.classList.contains('minimap-floating')) return;
+  applyMinimapWrapPosition(parseFloat(mmWrap.style.left) || 0, parseFloat(mmWrap.style.top) || 0);
 });
 
 initMinimapPosition();
@@ -7644,6 +7707,42 @@ function findCorners(pts, threshold = 0.60) {
 
 // ── Show the convert popup near the stroke
 let convertPopupTimer = null;
+let convertPopupOutsideCloser = null;
+
+function clearConvertPopupOutsideCloser() {
+  if (convertPopupOutsideCloser) {
+    document.removeEventListener('mousedown', convertPopupOutsideCloser, true);
+    convertPopupOutsideCloser = null;
+  }
+}
+
+function strokePointsBounds(pts) {
+  if (!pts?.length) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  pts.forEach((p) => {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  });
+  const pad = 6;
+  return {
+    x: minX - pad,
+    y: minY - pad,
+    w: Math.max(12, maxX - minX + pad * 2),
+    h: Math.max(12, maxY - minY + pad * 2),
+  };
+}
+
+function strokeLineEnds(pts) {
+  if (!pts?.length) return null;
+  return {
+    x1: pts[0].x,
+    y1: pts[0].y,
+    x2: pts[pts.length - 1].x,
+    y2: pts[pts.length - 1].y,
+  };
+}
 
 function showConvertPopup(strokeId, recognized, pathEl) {
   hideConvertPopup();
@@ -7731,76 +7830,110 @@ function showConvertPopup(strokeId, recognized, pathEl) {
   });
 
   // wire main button
-  document.getElementById('scp-main-btn').addEventListener('click', () => {
+  popup.querySelector('#scp-main-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    clearTimeout(convertPopupTimer);
     convertStrokeToShape(strokeId, recognized);
     hideConvertPopup();
   });
   // wire chevron dropdown
-  document.getElementById('scp-chevron-btn').addEventListener('click', e => {
+  popup.querySelector('#scp-chevron-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    document.getElementById('scp-shape-list').classList.toggle('open');
+    clearTimeout(convertPopupTimer);
+    popup.querySelector('#scp-shape-list')?.classList.toggle('open');
   });
-  // wire all shape options
-  document.querySelectorAll('.scp-shape-opt').forEach(btn => {
-    btn.addEventListener('click', () => {
+  // wire all shape options (scoped to this popup)
+  popup.querySelectorAll('.scp-shape-opt').forEach((btn) => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      clearTimeout(convertPopupTimer);
       const shapeKey = btn.dataset.shape;
+      if (!shapeKey) return;
       const customRec = { ...recognized, type: shapeKey };
       convertStrokeToShape(strokeId, customRec);
       hideConvertPopup();
     });
   });
-  document.getElementById('scp-dismiss-btn').addEventListener('click', () => {
+  popup.querySelector('#scp-dismiss-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
     hideConvertPopup();
   });
-  // close dropdown on outside click
-  document.addEventListener('click', function closeList() {
-    document.getElementById('scp-shape-list')?.classList.remove('open');
-  }, { once: true });
 
-  // auto-dismiss after 5 seconds
-  convertPopupTimer = setTimeout(hideConvertPopup, 5000);
+  clearConvertPopupOutsideCloser();
+  convertPopupOutsideCloser = (e) => {
+    if (e.target.closest('#shape-convert-popup')) return;
+    popup.querySelector('#scp-shape-list')?.classList.remove('open');
+    clearConvertPopupOutsideCloser();
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', convertPopupOutsideCloser, true);
+  }, 0);
+
+  // auto-dismiss after 8 seconds
+  convertPopupTimer = setTimeout(hideConvertPopup, 8000);
 }
 
 function hideConvertPopup() {
   clearTimeout(convertPopupTimer);
+  clearConvertPopupOutsideCloser();
   const popup = document.getElementById('shape-convert-popup');
-  if (popup) popup.classList.remove('visible');
+  if (popup) {
+    popup.classList.remove('visible');
+    popup.querySelector('#scp-shape-list')?.classList.remove('open');
+  }
 }
 
 // ── Convert the stroke to a clean shape object
 function convertStrokeToShape(strokeId, recognized) {
+  const strokeObj = state.objects.find((o) => o.id === strokeId);
+  const pts = strokeObj?.points ? [...strokeObj.points] : [];
+  const bbox = recognized.bbox || strokePointsBounds(pts);
+  const ends = Number.isFinite(recognized.x1)
+    ? { x1: recognized.x1, y1: recognized.y1, x2: recognized.x2, y2: recognized.y2 }
+    : strokeLineEnds(pts);
+
   // remove the original stroke
   const pathEl = document.querySelector(`path[data-obj-id="${strokeId}"]`);
   if (pathEl) pathEl.remove();
-  state.objects = state.objects.filter(o => o.id !== strokeId);
+  state.objects = state.objects.filter((o) => o.id !== strokeId);
 
   const type = recognized.type;
+  const lineTypes = ['line', 'arrow', 'right-angle-arrow'];
 
-  if (type === 'line' || type === 'right-angle-arrow') {
+  if (lineTypes.includes(type)) {
+    if (!ends) return;
+    const shapeType = type === 'line' ? 'line' : 'arrow';
     const obj = {
       id: uid(), type: 'shape',
-      shapeType: 'arrow',
-      x: recognized.x1, y: recognized.y1,
-      x2: recognized.x2, y2: recognized.y2,
+      shapeType,
+      x: ends.x1, y: ends.y1,
+      x2: ends.x2, y2: ends.y2,
       fill: 'none', stroke: '#141414', strokeWidth: 2,
       label: '',
     };
     stampOwner(obj);
     state.objects.push(obj);
     renderShapeObj(obj);
-
   } else {
-    const b = recognized.bbox;
+    if (!bbox) return;
     const shapeMap = {
-      'rect': 'rect', 'circle': 'circle', 'ellipse': 'circle',
-      'triangle': 'triangle', 'diamond': 'diamond',
-      'hexagon': 'hexagon', 'pentagon': 'hexagon',
+      rect: 'rect',
+      circle: 'circle',
+      ellipse: 'circle',
+      triangle: 'triangle',
+      diamond: 'diamond',
+      hexagon: 'hexagon',
+      pentagon: 'hexagon',
+      square: 'rect',
+      rectangle: 'rect',
     };
     const shapeType = shapeMap[type] || 'rect';
     const obj = {
       id: uid(), type: 'shape',
       shapeType,
-      x: b.x, y: b.y, w: b.w, h: b.h,
+      x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
       fill: '#fbfbfb', stroke: '#141414', strokeWidth: 1.5,
       label: '',
     };
@@ -9104,7 +9237,10 @@ function startStickyDrag(e, el, obj) {
   function onMove(ev) {
     const dx = (ev.clientX - startMouseX) / state.zoom;
     const dy = (ev.clientY - startMouseY) / state.zoom;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) hasMoved = true;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      hasMoved = true;
+      hideSelectionToolbarsForDrag();
+    }
     obj.x = startX + dx;
     obj.y = startY + dy;
     el.style.left = obj.x + 'px';
@@ -9112,6 +9248,7 @@ function startStickyDrag(e, el, obj) {
   }
 
   function onUp() {
+    restoreSelectionToolbarsAfterDrag();
     el.classList.remove('dragging');
     if (hasMoved) { History.push(); saveToStorage(); }
     document.removeEventListener('mousemove', onMove);
@@ -9288,6 +9425,7 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   ensureIconPickerReady();
   buildStampPicker();
   initIconToolbar();
+  initMinimapPosition();
 };
 
 window.__LPA_BOARD_BOOT__ = function bootBoard() {

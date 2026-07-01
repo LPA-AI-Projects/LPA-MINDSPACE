@@ -364,12 +364,24 @@ export default function Board({ session }) {
         bootVanilla();
         return;
       }
-      if (document.querySelector('script[data-lpa-board-vanilla]')) return;
+
+      const existing = document.querySelector('script[data-lpa-board-vanilla]');
+      if (existing) {
+        if (existing.dataset.loaded === '1') {
+          bootVanilla();
+        } else {
+          existing.addEventListener('load', bootVanilla, { once: true });
+        }
+        return;
+      }
 
       const script = document.createElement('script');
       script.setAttribute('data-lpa-board-vanilla', '1');
       script.src = vanillaSrc;
-      script.onload = bootVanilla;
+      script.onload = () => {
+        script.dataset.loaded = '1';
+        bootVanilla();
+      };
       document.body.appendChild(script);
     };
 

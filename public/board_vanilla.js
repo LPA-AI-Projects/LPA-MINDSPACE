@@ -26,6 +26,50 @@ const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 8;
 const ZOOM_STEP = 0.12;
 const GRID_BASE = 28; // px at zoom=1
+/** Pan values beyond this are treated as corrupt (saved boards had ~1e12). */
+const MAX_ABS_PAN = 5e6;
+
+function isViewportSane(panX, panY, zoom) {
+  if (!Number.isFinite(panX) || !Number.isFinite(panY) || !Number.isFinite(zoom)) return false;
+  if (zoom < ZOOM_MIN || zoom > ZOOM_MAX) return false;
+  if (Math.abs(panX) > MAX_ABS_PAN || Math.abs(panY) > MAX_ABS_PAN) return false;
+  return true;
+}
+
+function clampZoom(zoom) {
+  const z = Number.isFinite(zoom) ? zoom : 1;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+}
+
+/** Reset corrupt pan/zoom and fit content into view when possible. */
+function repairViewportAfterLoad({ persist = false, toast = true } = {}) {
+  if (isViewportSane(state.panX, state.panY, state.zoom)) return false;
+
+  state.panX = 0;
+  state.panY = 0;
+  state.zoom = clampZoom(state.zoom);
+
+  if (state.objects.length) {
+    fitObjectsInView(null);
+    if (toast) showToast('View reset to show board content');
+  } else {
+    applyTransform();
+  }
+
+  if (persist) saveToStorage();
+  return true;
+}
+
+function sanitizeViewportInPlace() {
+  if (isViewportSane(state.panX, state.panY, state.zoom)) {
+    state.zoom = clampZoom(state.zoom);
+    return false;
+  }
+  state.panX = 0;
+  state.panY = 0;
+  state.zoom = clampZoom(state.zoom);
+  return true;
+}
 
 // ═══════════════════════════════════════════════════
 // DOM REFS (refreshed when React remounts board HTML)
@@ -354,6 +398,7 @@ function applyTransform() {
     `translate(${state.panX}px,${state.panY}px) scale(${state.zoom})`;
   updateGrid();
   updateZoomLabel();
+  if (typeof updateDrawingLayerBounds === 'function') updateDrawingLayerBounds();
 }
 
 function updateGrid() {
@@ -506,6 +551,7 @@ function zoomTo(newZoom, cx, cy) {
   state.panX = cx - ratio * (cx - state.panX);
   state.panY = cy - ratio * (cy - state.panY);
   state.zoom = newZoom;
+  sanitizeViewportInPlace();
   applyTransform();
   breakFollowOnUserViewportChange();
   scheduleViewportPresencePublish();
@@ -976,9 +1022,11 @@ function getDrawingSvg() {
   if (!svg) {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.id = 'drawing-layer';
-    svg.style.cssText = 'position:absolute;top:0;left:0;width:200vw;height:200vh;overflow:visible;z-index:5;pointer-events:none;';
+    svg.setAttribute('overflow', 'visible');
+    svg.style.cssText = 'position:absolute;overflow:visible;z-index:5;pointer-events:none;';
     canvasWorld.appendChild(svg);
   }
+  if (typeof updateDrawingLayerBounds === 'function') updateDrawingLayerBounds();
   return svg;
 }
 
@@ -2270,10 +2318,10 @@ function navigateToScreenPoint(sx, sy) {
 
 function navigateToParticipantViewport(client) {
   if (!client) return false;
-  if (Number.isFinite(client.panX) && Number.isFinite(client.panY) && Number.isFinite(client.zoom)) {
+  if (isViewportSane(client.panX, client.panY, client.zoom)) {
     state.panX = client.panX;
     state.panY = client.panY;
-    state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, client.zoom));
+    state.zoom = clampZoom(client.zoom);
     applyTransform();
     return true;
   }
@@ -2355,10 +2403,10 @@ function applyFollowViewportIfNeeded() {
     if (activityPanelOpen) renderActivityPanel();
     return;
   }
-  if (Number.isFinite(client.panX) && Number.isFinite(client.panY) && Number.isFinite(client.zoom)) {
+  if (isViewportSane(client.panX, client.panY, client.zoom)) {
     state.panX = client.panX;
     state.panY = client.panY;
-    state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, client.zoom));
+    state.zoom = clampZoom(client.zoom);
     applyTransform();
     return;
   }
@@ -2569,6 +2617,7 @@ function scheduleBoardRedrawAfterLoad() {
         return;
       }
       redrawAll();
+      repairViewportAfterLoad({ persist: true, toast: true });
       History.baseline();
     } catch (e) {
       console.error('[board] redraw after load failed', e);
@@ -2588,9 +2637,9 @@ function loadFromStorage() {
     if (typeof raw === 'object') raw = JSON.stringify(raw);
     const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
     state.boardName = data.boardName || 'LP MindSpace';
-    state.panX = data.panX || 0;
-    state.panY = data.panY || 0;
-    state.zoom = data.zoom || 1;
+    state.panX = Number.isFinite(data.panX) ? data.panX : 0;
+    state.panY = Number.isFinite(data.panY) ? data.panY : 0;
+    state.zoom = clampZoom(data.zoom ?? 1);
     state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
     const boardNameInput = document.getElementById('boardName');
@@ -2648,6 +2697,11 @@ function serializeCurrentBoardState() {
 }
 
 function getCurrentBoardState() {
+  if (!isViewportSane(state.panX, state.panY, state.zoom)) {
+    sanitizeViewportInPlace();
+  } else {
+    state.zoom = clampZoom(state.zoom);
+  }
   return {
     boardName: state.boardName,
     objects: state.objects,
@@ -2778,9 +2832,12 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   );
 
   state.boardName = remoteState.boardName || state.boardName || 'LP MindSpace';
-  state.panX = Number.isFinite(remoteState.panX) ? remoteState.panX : 0;
-  state.panY = Number.isFinite(remoteState.panY) ? remoteState.panY : 0;
-  state.zoom = Number.isFinite(remoteState.zoom) ? remoteState.zoom : 1;
+  const remoteViewportOk = isViewportSane(remoteState.panX, remoteState.panY, remoteState.zoom);
+  if (remoteViewportOk) {
+    state.panX = remoteState.panX;
+    state.panY = remoteState.panY;
+    state.zoom = clampZoom(remoteState.zoom);
+  }
   state.objects = hydrateObjectsList([...mergedRemoteList, ...localImagesMissingFromRemote]);
   state.sharing = remoteState.sharing || null;
 
@@ -2789,6 +2846,9 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   document.title = state.boardName + ' — LP MindSpace';
   applyTransform();
   redrawAll();
+  if (!remoteViewportOk) {
+    repairViewportAfterLoad({ persist: sourceLabel === 'latest', toast: sourceLabel === 'latest' });
+  }
   updateObjectCount();
   History.baseline();
   lastPublishedBoardState = cloneBoardStateSnapshot(remoteState);
@@ -7210,6 +7270,22 @@ function getMinimapBounds() {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+/** Size the stroke SVG to cover all content + viewport (fixed 200vw box clipped far-away strokes). */
+function updateDrawingLayerBounds() {
+  const svg = document.getElementById('drawing-layer');
+  if (!svg) return;
+  const bounds = getMinimapBounds();
+  const w = Math.max(bounds.w, 1);
+  const h = Math.max(bounds.h, 1);
+  svg.setAttribute('viewBox', `${bounds.x} ${bounds.y} ${w} ${h}`);
+  svg.setAttribute('width', String(w));
+  svg.setAttribute('height', String(h));
+  svg.style.left = `${bounds.x}px`;
+  svg.style.top = `${bounds.y}px`;
+  svg.style.width = `${w}px`;
+  svg.style.height = `${h}px`;
+}
+
 // ── Draw the minimap
 function drawMinimap() {
   const bounds = getMinimapBounds();
@@ -7445,6 +7521,7 @@ History.push = function() {
 const _origRedrawAll = redrawAll;
 redrawAll = function() {
   _origRedrawAll();
+  updateDrawingLayerBounds();
   scheduleMinimap();
 };
 

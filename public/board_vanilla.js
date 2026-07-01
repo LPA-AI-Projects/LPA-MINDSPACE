@@ -1524,6 +1524,9 @@ function redo() {
 }
 
 function redrawAll() {
+  bindBoardDom();
+  if (!canvasWorld) return;
+
   // 1. clear selections safely
   if (typeof clearAllSelections === 'function') clearAllSelections();
 
@@ -2557,30 +2560,48 @@ function saveToStorage() {
   publishBoardDeltaUpdate();
 }
 
+function scheduleBoardRedrawAfterLoad() {
+  const run = () => {
+    try {
+      bindBoardDom();
+      if (!canvasWorld) {
+        console.warn('[board] canvas-world missing — cannot redraw loaded objects');
+        return;
+      }
+      redrawAll();
+      History.baseline();
+    } catch (e) {
+      console.error('[board] redraw after load failed', e);
+    }
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 0);
+}
+
 function loadFromStorage() {
   try {
-    const raw = window.supabaseInitialState || localStorage.getItem('lpa-mindspace-v1');
+    let raw = window.supabaseInitialState ?? localStorage.getItem('lpa-mindspace-v1');
     if (!raw) {
       History.baseline();
       return;
     }
-    const data = JSON.parse(raw);
+    if (typeof raw === 'object') raw = JSON.stringify(raw);
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
     state.boardName = data.boardName || 'LP MindSpace';
     state.panX = data.panX || 0;
     state.panY = data.panY || 0;
     state.zoom = data.zoom || 1;
     state.objects = hydrateObjectsList(data.objects || []);
     state.sharing = data.sharing || null;
-    document.getElementById('boardName').value = state.boardName;
+    const boardNameInput = document.getElementById('boardName');
+    if (boardNameInput) boardNameInput.value = state.boardName;
     document.title = state.boardName + ' — LP MindSpace';
     applyTransform();
     updateObjectCount();
-    // Defer redrawAll until after ALL JS is initialized
-    setTimeout(() => {
-      redrawAll();
-      History.baseline(); // baseline = what user sees on load, nothing to undo
-    }, 0);
-  } catch(e) {}
+    scheduleBoardRedrawAfterLoad();
+  } catch (e) {
+    console.error('[board] loadFromStorage failed', e);
+  }
 }
 
 // auto-save every 10s
@@ -4843,16 +4864,6 @@ document.addEventListener('keydown', ev => {
     ev.preventDefault(); duplicateSelectedShape();
   }
 }, true);
-
-// ── Init on load
-whenDomReady(() => {
-  initShapeToolbar();
-  buildShapePicker();
-  buildStampPicker();
-  initIconPicker();
-  initIconToolbar();
-});
-
 
 // ═══════════════════════════════════════════════════
 // IMAGES — STEP 5
@@ -9408,6 +9419,18 @@ window.__LPA_BOARD_VANILLA_LOADED__ = true;
 
 let boardBooted = false;
 
+function initBoardPickers() {
+  try {
+    initShapeToolbar();
+    buildShapePicker();
+    buildStampPicker();
+    ensureIconPickerReady();
+    initIconToolbar();
+  } catch (e) {
+    console.error('[board] initBoardPickers failed', e);
+  }
+}
+
 window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   bindBoardDom();
   bindUiDom();
@@ -9422,9 +9445,7 @@ window.__LPA_BOARD_REINIT__ = function reinitBoardAfterDomRemount() {
   initActivityPanel();
   pullLatestBoardStateFromSupabase();
   if (activityPanelOpen) renderActivityPanel();
-  ensureIconPickerReady();
-  buildStampPicker();
-  initIconToolbar();
+  initBoardPickers();
   initMinimapPosition();
 };
 
@@ -9435,6 +9456,7 @@ window.__LPA_BOARD_BOOT__ = function bootBoard() {
   bindCanvasPointerEvents();
   if (!boardBooted) {
     boardBooted = true;
+    initBoardPickers();
     init();
     return;
   }

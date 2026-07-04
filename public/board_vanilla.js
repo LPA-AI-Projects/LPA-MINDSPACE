@@ -87,7 +87,7 @@ function bindBoardDom() {
 
 const UI_CHROME_SELECTOR =
   '#board-bar-left, #board-bar-right, #viewport-return-banner, #toolbar, #zoom-panel, #share-dialog, #activity-panel, #export-menu, ' +
-  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, ' +
+  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, #sticky-toolbar, ' +
   '#shortcuts-overlay, #board-info-panel, #about-panel, #panel-backdrop, #minimap-wrap, ' +
   '#ctx-menu, #shape-convert-popup, #sticky-color-picker, #sel-ai-popup, #export-progress, #ai-loading';
 
@@ -399,6 +399,10 @@ function applyTransform() {
   updateGrid();
   updateZoomLabel();
   if (typeof updateDrawingLayerBounds === 'function') updateDrawingLayerBounds();
+  const stampLayer = document.getElementById('stamp-layer');
+  if (stampLayer) {
+    stampLayer.style.setProperty('--stamp-zoom-compensate', String(1 / Math.max(state.zoom, ZOOM_MIN)));
+  }
 }
 
 function updateGrid() {
@@ -439,7 +443,7 @@ function isFloatingPanelVisible(el, id) {
   if (id === 'sel-ai-popup') return el.classList.contains('is-open');
   if (id === 'ai-bar') return el.classList.contains('visible');
   if (id === 'sel-toolbar') return el.classList.contains('visible');
-  if (['shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar'].includes(id)) {
+  if (['shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar'].includes(id)) {
     return el.classList.contains('visible');
   }
   return true;
@@ -455,7 +459,7 @@ function getFloatingUiObstacleRects(excludeIds = []) {
   const toolbar = document.getElementById('toolbar');
   if (toolbar) rects.push(toolbar.getBoundingClientRect());
 
-  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sel-ai-popup'].forEach((id) => {
+  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar', 'sel-ai-popup'].forEach((id) => {
     if (excludeIds.includes(id)) return;
     const el = document.getElementById(id);
     if (!el || !isFloatingPanelVisible(el, id)) return;
@@ -513,7 +517,7 @@ function positionFloatingPanel(el, { anchorRect, excludeIds = [] }) {
 }
 
 function getActiveSelectionToolbarEl() {
-  for (const id of ['text-toolbar', 'shape-toolbar', 'image-toolbar', 'icon-toolbar', 'sel-toolbar']) {
+  for (const id of ['text-toolbar', 'shape-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar', 'sel-toolbar']) {
     const el = document.getElementById(id);
     if (!el || !isFloatingPanelVisible(el, id)) continue;
     return el;
@@ -524,7 +528,7 @@ function getActiveSelectionToolbarEl() {
 function shouldHideSelToolbarForTypeToolbar() {
   if (selectedIds.size !== 1) return false;
   const obj = state.objects.find((o) => o.id === [...selectedIds][0]);
-  return !!obj && ['text', 'shape', 'image', 'icon'].includes(obj.type);
+  return !!obj && ['text', 'shape', 'image', 'icon', 'sticky'].includes(obj.type);
 }
 
 function repositionSelectionAiPopup() {
@@ -779,6 +783,9 @@ function ensureStampLayer() {
     layer.setAttribute('aria-hidden', 'true');
     canvasWorld.appendChild(layer);
   }
+  if (layer) {
+    layer.style.setProperty('--stamp-zoom-compensate', String(1 / Math.max(state.zoom, ZOOM_MIN)));
+  }
   return layer;
 }
 
@@ -850,8 +857,10 @@ function playBoardStampAnimation(payload) {
   el.style.left = `${payload.x}px`;
   el.style.top = `${payload.y}px`;
   el.innerHTML = `
-    <span class="board-stamp-emoji">${payload.emoji}</span>
-    <span class="board-stamp-name">${escapeHtml(payload.userName || 'User')}</span>
+    <div class="board-stamp-burst">
+      <span class="board-stamp-emoji">${payload.emoji}</span>
+      <span class="board-stamp-name">${escapeHtml(payload.userName || 'User')}</span>
+    </div>
   `;
   layer.appendChild(el);
   window.setTimeout(() => el.remove(), STAMP_ANIM_MS + 80);
@@ -872,7 +881,12 @@ function publishBoardStamp(payload) {
 function handleCanvasPointerDown(e) {
   if (e.button !== 0) return;
   if (typeof e.isPrimary === 'boolean' && !e.isPrimary) return;
-  e.preventDefault();
+
+  const target = e.target instanceof Element ? e.target : null;
+  const stickyTextClick = state.tool === 'select' && !!target?.closest('.sticky-text');
+
+  // Allow native textarea focus when clicking sticky text (select tool).
+  if (!stickyTextClick) e.preventDefault();
   hideShortcutsIfOpen();
 
   const tool = state.tool;
@@ -3464,6 +3478,7 @@ function hideSelectionToolbarsForDrag() {
   selToolbar?.classList.remove('visible');
   document.getElementById('shape-toolbar')?.classList.remove('visible');
   document.getElementById('text-toolbar')?.classList.remove('visible');
+  document.getElementById('sticky-toolbar')?.classList.remove('visible');
   document.getElementById('image-toolbar')?.classList.remove('visible');
   document.getElementById('icon-toolbar')?.classList.remove('visible');
   if (typeof hideAllTtbMenus === 'function') hideAllTtbMenus();
@@ -3487,6 +3502,7 @@ function restoreSelectionToolbarsAfterDrag() {
     else if (obj?.type === 'image' && el) showImageToolbar(el);
     else if (obj?.type === 'icon' && el) showIconToolbar(el);
     else if (obj?.type === 'text' && el) showTextToolbar(el);
+    else if (obj?.type === 'sticky' && el) showStickyToolbar(el);
     else updateSelToolbar();
   } else {
     updateSelToolbar();
@@ -3555,8 +3571,14 @@ function handleSelectMousedown(e) {
   const stickyEl = target.closest('.sticky-note');
   if (stickyEl) {
     const id = stickyEl.dataset.objId;
+    const textClick = target.closest('.sticky-text');
     if (!addMode) clearAllSelections();
     selectObject(id, true);
+    if (textClick) {
+      focusStickyText(id);
+      e.stopPropagation();
+      return;
+    }
     startObjDrag(e, id);
     e.stopPropagation();
     return;
@@ -3681,6 +3703,12 @@ function startObjDrag(e, clickedId) {
           clientY: ev?.clientY ?? startMouseY,
         });
       }
+    } else if (
+      clickedObj?.type === 'sticky'
+      && canEditObject(clickedObj)
+      && dragStartTarget?.closest?.('.sticky-text')
+    ) {
+      focusStickyText(clickedId);
     }
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
@@ -3803,6 +3831,7 @@ function applyBoxSelect(bx, by, bw, bh) {
       const el = document.querySelector(`[data-obj-id="${id}"]`);
       if (obj?.type === 'shape' && el) showShapeToolbar(el);
       else if (obj?.type === 'text' && el) showTextToolbar(el);
+      else if (obj?.type === 'sticky' && el) showStickyToolbar(el);
       else if (obj?.type === 'image' && el) showImageToolbar(el);
       else if (obj?.type === 'icon' && el) selectIconObj(id, true);
     }
@@ -3831,6 +3860,7 @@ function deleteSelectedObj() {
   });
   selectedIds.clear();
   selectedStickyId = null;
+  hideStickyToolbar();
   updateObjectCount();
   hideSelToolbar();
   History.push();
@@ -6275,6 +6305,7 @@ function initTextToolbar() {
     document.addEventListener('mousedown', (e) => {
       if (
         !e.target.closest('#text-toolbar')
+        && !e.target.closest('#sticky-toolbar')
         && !e.target.closest('#shape-toolbar')
         && !e.target.closest('#image-toolbar')
         && !e.target.closest('#icon-toolbar')
@@ -6434,15 +6465,26 @@ function deleteSelectedTextNode() {
   showToast('Deleted');
 }
 
-// ── Patch selectObject to show text toolbar when text is selected
+// ── Patch selectObject to show text/sticky toolbars when selected
 const _origSelectObject = selectObject;
 selectObject = function(id, addToSelection) {
   _origSelectObject(id, addToSelection);
   const obj = state.objects.find(o => o.id === id);
-  if (obj && obj.type === 'text' && selectedIds.has(id)) {
-    selectTextNode(id);
+  if (selectedIds.size === 1 && obj && selectedIds.has(id)) {
+    if (obj.type === 'text') {
+      hideStickyToolbar();
+      selectTextNode(id);
+    } else if (obj.type === 'sticky') {
+      hideTextToolbar();
+      const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
+      if (el) showStickyToolbar(el);
+    } else {
+      hideTextToolbar();
+      hideStickyToolbar();
+    }
   } else {
     hideTextToolbar();
+    hideStickyToolbar();
   }
 };
 
@@ -6452,6 +6494,7 @@ clearAllSelections = function() {
   endActiveTextEdit();
   _origClearAllForText();
   hideTextToolbar();
+  hideStickyToolbar();
   document.querySelectorAll('.canvas-text.sel-active').forEach(el => {
     el.classList.remove('sel-active');
     el.style.border = '1.5px solid transparent';
@@ -6461,6 +6504,312 @@ clearAllSelections = function() {
 
 // ── Init on load
 whenDomReady(initTextToolbar);
+whenDomReady(initStickyToolbar);
+
+
+// ═══════════════════════════════════════════════════
+// STICKY NOTE TEXT TOOLBAR
+// ═══════════════════════════════════════════════════
+
+const DEFAULT_STICKY_TEXT = {
+  fontFamily: BOARD_UI_FONT,
+  fontSize: 14,
+  fontWeight: '500',
+  fontStyle: 'normal',
+  textAlign: 'left',
+  textDecoration: 'none',
+  textColor: 'rgba(0,0,0,0.75)',
+  highlight: 'transparent',
+};
+
+function ensureStickyTextDefaults(obj) {
+  if (!obj || obj.type !== 'sticky') return obj;
+  if (!obj.fontFamily) obj.fontFamily = DEFAULT_STICKY_TEXT.fontFamily;
+  if (!obj.fontSize) obj.fontSize = DEFAULT_STICKY_TEXT.fontSize;
+  if (!obj.fontWeight) obj.fontWeight = DEFAULT_STICKY_TEXT.fontWeight;
+  if (!obj.fontStyle) obj.fontStyle = DEFAULT_STICKY_TEXT.fontStyle;
+  if (!obj.textAlign) obj.textAlign = DEFAULT_STICKY_TEXT.textAlign;
+  if (!obj.textDecoration) obj.textDecoration = DEFAULT_STICKY_TEXT.textDecoration;
+  if (!obj.textColor) obj.textColor = DEFAULT_STICKY_TEXT.textColor;
+  if (obj.highlight == null) obj.highlight = DEFAULT_STICKY_TEXT.highlight;
+  return obj;
+}
+
+function applyStickyTextToElement(ta, obj) {
+  if (!ta || !obj) return;
+  ensureStickyTextDefaults(obj);
+  ta.style.fontFamily = obj.fontFamily;
+  ta.style.fontSize = `${obj.fontSize}px`;
+  ta.style.fontWeight = obj.fontWeight;
+  ta.style.fontStyle = obj.fontStyle;
+  ta.style.textAlign = obj.textAlign;
+  ta.style.textDecoration = obj.textDecoration;
+  ta.style.color = obj.textColor;
+  const highlight = normalizeTextHighlight(obj.highlight);
+  ta.style.background = highlight === 'transparent' ? 'transparent' : highlight;
+}
+
+function syncStickyAlignButtons(align) {
+  document.querySelectorAll('#stb-align-menu .ttb-menu-item').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.align === align);
+  });
+  const badge = document.getElementById('stb-align-badge');
+  if (badge) badge.innerHTML = TTB_ALIGN_SVGS[align] || TTB_ALIGN_SVGS.left;
+}
+
+function syncStickyColorDot(color) {
+  const dot = document.getElementById('stb-color-dot');
+  if (dot) dot.style.background = color || '#141414';
+}
+
+function syncStickyHighlightDot(highlight) {
+  const badge = document.getElementById('stb-highlight-badge');
+  if (!badge) return;
+  const normalized = normalizeTextHighlight(highlight);
+  if (normalized === 'transparent') {
+    badge.innerHTML = TTB_HIGHLIGHT_BADGE_SVG;
+    return;
+  }
+  badge.innerHTML = `<span class="ttb-highlight-preview" style="background:${normalized}"></span>`;
+}
+
+function syncStickyStyleTrigger(obj) {
+  const styleBtn = document.getElementById('stb-style-btn');
+  if (!styleBtn || !obj) return;
+  const active = obj.fontWeight === 'bold' || obj.fontWeight === '700'
+    || obj.fontStyle === 'italic'
+    || obj.textDecoration === 'underline';
+  styleBtn.classList.toggle('active', active);
+}
+
+function syncStickyToolbarFromObj(obj) {
+  if (!obj) return;
+  ensureStickyTextDefaults(obj);
+  const fontBtn = document.getElementById('stb-font-btn');
+  if (fontBtn) fontBtn.title = `Font: ${getTextFontLabel(obj.fontFamily)}`;
+  const size = obj.fontSize || 14;
+  const sizeVal = document.getElementById('stb-size-val');
+  if (sizeVal) sizeVal.value = size;
+  const sizeBadge = document.getElementById('stb-size-badge');
+  if (sizeBadge) sizeBadge.textContent = size;
+  document.getElementById('stb-bold')?.classList.toggle('active', obj.fontWeight === 'bold' || obj.fontWeight === '700');
+  document.getElementById('stb-italic')?.classList.toggle('active', obj.fontStyle === 'italic');
+  document.getElementById('stb-underline')?.classList.toggle('active', obj.textDecoration === 'underline');
+  syncStickyStyleTrigger(obj);
+  syncStickyAlignButtons(obj.textAlign || 'left');
+  syncStickyColorDot(obj.textColor);
+  syncStickyHighlightDot(obj.highlight);
+  document.querySelectorAll('#stb-font-menu .ttb-menu-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.font === obj.fontFamily);
+  });
+  document.querySelectorAll('#stb-colors .ttb-color-swatch').forEach((s) => {
+    s.classList.toggle('active', s.title === obj.textColor);
+  });
+  const highlight = normalizeTextHighlight(obj.highlight);
+  document.querySelectorAll('#stb-highlights .ttb-highlight-swatch').forEach((s) => {
+    s.classList.toggle('active', s.title === highlight);
+  });
+}
+
+function initStickyToolbar() {
+  const fontMenu = document.getElementById('stb-font-menu');
+  if (fontMenu && fontMenu.dataset.toolbarInited !== '1') {
+    fontMenu.dataset.toolbarInited = '1';
+    TEXT_FONTS.forEach(({ label, value }) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ttb-menu-item';
+      btn.dataset.font = value;
+      btn.style.fontFamily = value;
+      btn.textContent = label;
+      btn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setStickyFont(value);
+        hideAllTtbMenus();
+      });
+      fontMenu.appendChild(btn);
+    });
+  }
+
+  const alignMenu = document.getElementById('stb-align-menu');
+  if (alignMenu && alignMenu.dataset.toolbarInited !== '1') {
+    alignMenu.dataset.toolbarInited = '1';
+    [
+      { align: 'left', label: 'Left' },
+      { align: 'center', label: 'Center' },
+      { align: 'right', label: 'Right' },
+    ].forEach(({ align, label }) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ttb-menu-item';
+      btn.dataset.align = align;
+      btn.title = label;
+      btn.innerHTML = `${TTB_ALIGN_SVGS[align]}<span>${label}</span>`;
+      btn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setStickyAlign(align);
+        hideAllTtbMenus();
+      });
+      alignMenu.appendChild(btn);
+    });
+  }
+
+  const wrap = document.getElementById('stb-colors');
+  if (wrap && wrap.dataset.toolbarInited !== '1') {
+    wrap.dataset.toolbarInited = '1';
+    TEXT_COLORS.forEach((c) => {
+      const s = document.createElement('div');
+      s.className = 'ttb-color-swatch';
+      s.style.background = c;
+      if (c === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
+      s.title = c;
+      s.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setStickyTextColor(c);
+        hideAllTtbMenus();
+      });
+      wrap.appendChild(s);
+    });
+  }
+
+  const hiWrap = document.getElementById('stb-highlights');
+  if (hiWrap && hiWrap.dataset.toolbarInited !== '1') {
+    hiWrap.dataset.toolbarInited = '1';
+    TEXT_HIGHLIGHTS.forEach(({ color, label }) => {
+      const s = document.createElement('div');
+      s.className = 'ttb-highlight-swatch' + (color === 'transparent' ? ' ttb-highlight-swatch--none' : '');
+      if (color !== 'transparent') s.style.background = color;
+      s.title = color;
+      s.setAttribute('aria-label', label);
+      s.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setStickyHighlight(color);
+        hideAllTtbMenus();
+      });
+      hiWrap.appendChild(s);
+    });
+  }
+}
+
+function showStickyToolbar(el) {
+  const tb = document.getElementById('sticky-toolbar');
+  if (!tb || !el) return;
+  hideAllTtbMenus();
+  hideSelToolbar();
+  tb.classList.add('visible');
+  const obj = state.objects.find((o) => o.id === el.dataset.objId);
+  if (obj) syncStickyToolbarFromObj(obj);
+  requestAnimationFrame(() => {
+    positionFloatingPanel(tb, {
+      anchorRect: el.getBoundingClientRect(),
+      excludeIds: ['sticky-toolbar'],
+    });
+    repositionSelectionAiPopup();
+  });
+}
+
+function hideStickyToolbar() {
+  hideAllTtbMenus();
+  document.getElementById('sticky-toolbar')?.classList.remove('visible');
+}
+
+function applyStickyStyle(prop, value) {
+  if (!selectedStickyId) return;
+  const obj = state.objects.find((o) => o.id === selectedStickyId);
+  const el = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
+  const ta = el?.querySelector('.sticky-text');
+  if (!obj || !ta || !guardEditObject(obj)) return;
+  if (prop === 'highlight') value = normalizeTextHighlight(value);
+  obj[prop] = value;
+  applyStickyTextToElement(ta, obj);
+  History.push();
+  saveToStorage();
+  focusStickyText(selectedStickyId);
+}
+
+function changeStickySize(delta) {
+  if (!selectedStickyId) return;
+  const obj = state.objects.find((o) => o.id === selectedStickyId);
+  if (!obj) return;
+  const newSize = Math.max(8, Math.min(200, (obj.fontSize || 14) + delta));
+  setStickySize(newSize);
+}
+
+function setStickySize(size) {
+  size = Math.max(8, Math.min(200, size || 14));
+  const sizeVal = document.getElementById('stb-size-val');
+  if (sizeVal) sizeVal.value = size;
+  const sizeBadge = document.getElementById('stb-size-badge');
+  if (sizeBadge) sizeBadge.textContent = size;
+  applyStickyStyle('fontSize', size);
+  const el = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
+  if (el) showStickyToolbar(el);
+}
+
+function toggleStickyBold() {
+  if (!selectedStickyId) return;
+  const obj = state.objects.find((o) => o.id === selectedStickyId);
+  if (!obj) return;
+  const isBold = obj.fontWeight === 'bold' || obj.fontWeight === '700';
+  applyStickyStyle('fontWeight', isBold ? '500' : 'bold');
+  document.getElementById('stb-bold')?.classList.toggle('active', !isBold);
+  syncStickyStyleTrigger(state.objects.find((o) => o.id === selectedStickyId));
+}
+
+function toggleStickyItalic() {
+  if (!selectedStickyId) return;
+  const obj = state.objects.find((o) => o.id === selectedStickyId);
+  if (!obj) return;
+  const isItalic = obj.fontStyle === 'italic';
+  applyStickyStyle('fontStyle', isItalic ? 'normal' : 'italic');
+  document.getElementById('stb-italic')?.classList.toggle('active', !isItalic);
+  syncStickyStyleTrigger(state.objects.find((o) => o.id === selectedStickyId));
+}
+
+function toggleStickyUnderline() {
+  if (!selectedStickyId) return;
+  const obj = state.objects.find((o) => o.id === selectedStickyId);
+  if (!obj) return;
+  const isUnderline = obj.textDecoration === 'underline';
+  applyStickyStyle('textDecoration', isUnderline ? 'none' : 'underline');
+  document.getElementById('stb-underline')?.classList.toggle('active', !isUnderline);
+  syncStickyStyleTrigger(state.objects.find((o) => o.id === selectedStickyId));
+}
+
+function setStickyFont(fontFamily) {
+  applyStickyStyle('fontFamily', fontFamily);
+  const fontBtn = document.getElementById('stb-font-btn');
+  if (fontBtn) fontBtn.title = `Font: ${getTextFontLabel(fontFamily)}`;
+  document.querySelectorAll('#stb-font-menu .ttb-menu-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.font === fontFamily);
+  });
+}
+
+function setStickyAlign(align) {
+  applyStickyStyle('textAlign', align);
+  syncStickyAlignButtons(align);
+}
+
+function setStickyHighlight(color) {
+  const highlight = normalizeTextHighlight(color);
+  applyStickyStyle('highlight', highlight);
+  syncStickyHighlightDot(highlight);
+  document.querySelectorAll('#stb-highlights .ttb-highlight-swatch').forEach((s) => {
+    s.classList.toggle('active', s.title === highlight);
+  });
+}
+
+function setStickyTextColor(color) {
+  applyStickyStyle('textColor', color);
+  syncStickyColorDot(color);
+  document.querySelectorAll('#stb-colors .ttb-color-swatch').forEach((s) => {
+    s.classList.toggle('active', s.title === color);
+  });
+}
 
 
 // ═══════════════════════════════════════════════════
@@ -8762,6 +9111,7 @@ function showSelectionAiPrompt() {
         && !e.target.closest('#sel-toolbar')
         && !e.target.closest('#shape-toolbar')
         && !e.target.closest('#text-toolbar')
+        && !e.target.closest('#sticky-toolbar')
         && !e.target.closest('.ttb-menu')
         && !e.target.closest('#image-toolbar')) {
         popup.classList.remove('is-open');
@@ -9065,6 +9415,23 @@ let stickyLastColor = 'yellow';
 let selectedStickyId = null;
 let stickyPickerTargetId = null;
 
+function focusStickyText(id, opts = {}) {
+  if (!id) return;
+  const obj = state.objects.find((o) => o.id === id);
+  if (!obj || !canEditObject(obj)) return;
+  const ta = document.querySelector(`.sticky-note[data-obj-id="${id}"] .sticky-text`);
+  if (!ta) return;
+  requestAnimationFrame(() => {
+    ta.focus();
+    const len = ta.value.length;
+    if (opts.caretAtStart) {
+      ta.selectionStart = ta.selectionEnd = 0;
+    } else if (opts.caretAtEnd !== false) {
+      ta.selectionStart = ta.selectionEnd = len;
+    }
+  });
+}
+
 // ── Build color picker swatches once
 function initStickyColorPicker() {
   const wrap = document.getElementById('scp-swatches');
@@ -9110,7 +9477,9 @@ function placeSticky(e) {
     color: stickyLastColor,
     text: '',
     zIndex: nextZIndex(),
+    ...DEFAULT_STICKY_TEXT,
   });
+  ensureStickyTextDefaults(obj);
   state.objects.push(obj);
   updateObjectCount();
   // Don't push history here — wait for blur so place+type = 1 undo step
@@ -9200,6 +9569,8 @@ function renderStickyFromObj(obj) {
 
   // ── TEXT editing
   const ta = el.querySelector('.sticky-text');
+  ensureStickyTextDefaults(obj);
+  applyStickyTextToElement(ta, obj);
   ta.addEventListener('mousedown', ev => ev.stopPropagation());
   ta.addEventListener('focus', () => {
     if (!canEditObject(obj)) {
@@ -9429,6 +9800,7 @@ function applyColorToSticky(id, colorName) {
   const found = STICKY_COLORS.find(c => c.name === colorName);
   if (found) el.classList.add(found.cls);
   saveToStorage();
+  focusStickyText(id);
 }
 
 // ── DUPLICATE
@@ -9503,6 +9875,7 @@ function initBoardPickers() {
     buildStampPicker();
     ensureIconPickerReady();
     initIconToolbar();
+    initStickyToolbar();
   } catch (e) {
     console.error('[board] initBoardPickers failed', e);
   }

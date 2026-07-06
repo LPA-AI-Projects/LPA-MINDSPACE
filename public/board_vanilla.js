@@ -6137,6 +6137,24 @@ function positionTtbMenu(menu, btn) {
   menu.style.left = `${Math.max(8, left)}px`;
 }
 
+function menuIdToTriggerBtnId(menuId) {
+  return menuId
+    .replace('-size-menu', '-size-trigger')
+    .replace('-font-menu', '-font-btn')
+    .replace('-style-menu', '-style-btn')
+    .replace('-align-menu', '-align-btn')
+    .replace('-color-menu', '-color-btn')
+    .replace('-highlight-menu', '-highlight-btn');
+}
+
+function repositionOpenTtbMenu() {
+  if (!openTtbMenuId) return;
+  const menu = document.getElementById(openTtbMenuId);
+  if (!menu?.classList.contains('visible')) return;
+  const btn = document.getElementById(menuIdToTriggerBtnId(openTtbMenuId));
+  if (btn) positionTtbMenu(menu, btn);
+}
+
 function toggleTtbMenu(menuId, btn) {
   const menu = document.getElementById(menuId);
   if (!menu) return;
@@ -6319,10 +6337,10 @@ function initTextToolbar() {
 }
 
 // ── Show toolbar above/below a text element
-function showTextToolbar(el) {
+function showTextToolbar(el, options = {}) {
   const tb = document.getElementById('text-toolbar');
   if (!tb) return;
-  hideAllTtbMenus();
+  if (!options.keepMenus) hideAllTtbMenus();
   hideSelToolbar();
   tb.classList.add('visible');
 
@@ -6335,6 +6353,7 @@ function showTextToolbar(el) {
       anchorRect: el.getBoundingClientRect(),
       excludeIds: ['text-toolbar'],
     });
+    repositionOpenTtbMenu();
     repositionSelectionAiPopup();
   });
 }
@@ -6387,9 +6406,9 @@ function setTextSize(size) {
   const sizeBadge = document.getElementById('ttb-size-badge');
   if (sizeBadge) sizeBadge.textContent = size;
   applyTextStyle('fontSize', size);
-  // reposition toolbar since text element height changed
+  // Reposition toolbar without closing the size menu
   const el = document.querySelector(`.canvas-text[data-obj-id="${selectedTextId}"]`);
-  if (el) showTextToolbar(el);
+  if (el) showTextToolbar(el, { keepMenus: true });
 }
 
 function toggleTextBold() {
@@ -6695,10 +6714,10 @@ function initStickyToolbar() {
   }
 }
 
-function showStickyToolbar(el) {
+function showStickyToolbar(el, options = {}) {
   const tb = document.getElementById('sticky-toolbar');
   if (!tb || !el) return;
-  hideAllTtbMenus();
+  if (!options.keepMenus) hideAllTtbMenus();
   hideSelToolbar();
   tb.classList.add('visible');
   const obj = state.objects.find((o) => o.id === el.dataset.objId);
@@ -6708,6 +6727,7 @@ function showStickyToolbar(el) {
       anchorRect: el.getBoundingClientRect(),
       excludeIds: ['sticky-toolbar'],
     });
+    repositionOpenTtbMenu();
     repositionSelectionAiPopup();
   });
 }
@@ -6747,7 +6767,7 @@ function setStickySize(size) {
   if (sizeBadge) sizeBadge.textContent = size;
   applyStickyStyle('fontSize', size);
   const el = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
-  if (el) showStickyToolbar(el);
+  if (el) showStickyToolbar(el, { keepMenus: true });
 }
 
 function toggleStickyBold() {

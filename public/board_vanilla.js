@@ -6496,7 +6496,7 @@ selectObject = function(id, addToSelection) {
     } else if (obj.type === 'sticky') {
       hideTextToolbar();
       const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
-      if (el) showStickyToolbar(el);
+      if (el) showStickyToolbar(el, { keepMenus: !!openTtbMenuId });
     } else {
       hideTextToolbar();
       hideStickyToolbar();
@@ -6737,7 +6737,7 @@ function hideStickyToolbar() {
   document.getElementById('sticky-toolbar')?.classList.remove('visible');
 }
 
-function applyStickyStyle(prop, value) {
+function applyStickyStyle(prop, value, options = {}) {
   if (!selectedStickyId) return;
   const obj = state.objects.find((o) => o.id === selectedStickyId);
   const el = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
@@ -6748,7 +6748,7 @@ function applyStickyStyle(prop, value) {
   applyStickyTextToElement(ta, obj);
   History.push();
   saveToStorage();
-  focusStickyText(selectedStickyId);
+  if (!options.skipFocus) focusStickyText(selectedStickyId);
 }
 
 function changeStickySize(delta) {
@@ -6765,7 +6765,7 @@ function setStickySize(size) {
   if (sizeVal) sizeVal.value = size;
   const sizeBadge = document.getElementById('stb-size-badge');
   if (sizeBadge) sizeBadge.textContent = size;
-  applyStickyStyle('fontSize', size);
+  applyStickyStyle('fontSize', size, { skipFocus: true });
   const el = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
   if (el) showStickyToolbar(el, { keepMenus: true });
 }

@@ -1682,14 +1682,53 @@ function finishTextEditing(wrap, obj, editable) {
   wrap.style.border = selectedIds.has(obj.id)
     ? '1.5px solid #2e9d91'
     : '1.5px solid transparent';
-  if (!obj.w) obj.w = wrap.offsetWidth;
-  if (!obj.h) obj.h = wrap.offsetHeight;
+  fitCanvasTextBoxToContent(wrap, obj);
   const newText = editable.textContent;
   if (newText !== obj.content) {
     obj.content = newText;
     History.push();
     saveToStorage();
   }
+}
+
+function fitCanvasTextBoxToContent(wrap, obj) {
+  const editable = getTextEditable(wrap);
+  if (!wrap || !obj || !editable) return;
+
+  const minW = 60;
+  const fontSize = obj.fontSize || 18;
+  const minH = Math.max(24, Math.ceil(fontSize * 1.5) + 6);
+  const padY = 6;
+
+  const prevOverflow = wrap.style.overflow;
+  let measureW = obj.w || wrap.offsetWidth || 120;
+  wrap.style.overflow = 'hidden';
+  wrap.style.width = `${measureW}px`;
+  wrap.style.height = 'auto';
+
+  let neededW = measureW;
+  let neededH = Math.max(minH, editable.scrollHeight + padY);
+
+  if (editable.scrollWidth > editable.clientWidth + 1) {
+    wrap.style.width = 'auto';
+    neededW = Math.max(minW, wrap.offsetWidth);
+    wrap.style.width = `${neededW}px`;
+    neededH = Math.max(minH, editable.scrollHeight + padY);
+  } else if (!(editable.textContent || '').includes('\n')) {
+    wrap.style.width = 'auto';
+    const autoW = Math.max(minW, wrap.offsetWidth);
+    if (autoW > measureW) {
+      neededW = autoW;
+      wrap.style.width = `${neededW}px`;
+      neededH = Math.max(minH, editable.scrollHeight + padY);
+    }
+  }
+
+  obj.w = Math.max(obj.w || 0, neededW, minW);
+  obj.h = Math.max(obj.h || 0, neededH);
+  wrap.style.width = `${obj.w}px`;
+  wrap.style.height = `${obj.h}px`;
+  wrap.style.overflow = prevOverflow || 'hidden';
 }
 
 function beginTextEditing(wrap, obj, opts = {}) {
@@ -3575,8 +3614,7 @@ function handleSelectMousedown(e) {
     if (!addMode) clearAllSelections();
     selectObject(id, true);
     if (textClick) {
-      focusStickyText(id);
-      e.stopPropagation();
+      // Let the textarea receive the click so the caret lands at the pointer.
       return;
     }
     startObjDrag(e, id);
@@ -6380,7 +6418,7 @@ function applyTextStyle(prop, value) {
   if (!obj || !el || !guardEditObject(obj)) return;
   if (prop === 'highlight') value = normalizeTextHighlight(value);
   obj[prop] = value;
-  if (prop === 'fontSize')        { el.style.fontSize = value + 'px'; }
+  if (prop === 'fontSize')        { el.style.fontSize = value + 'px'; fitCanvasTextBoxToContent(el, obj); }
   if (prop === 'fontWeight')      { el.style.fontWeight = value; }
   if (prop === 'fontStyle')       { el.style.fontStyle = value; }
   if (prop === 'fontFamily')      { el.style.fontFamily = value; }
@@ -6568,6 +6606,23 @@ function applyStickyTextToElement(ta, obj) {
   ta.style.background = highlight === 'transparent' ? 'transparent' : highlight;
 }
 
+function fitStickyNoteToContent(el, obj, ta) {
+  if (!el || !obj || !ta) return;
+  const STICKY_HANDLE_H = 28;
+  const STICKY_BODY_PAD = 22;
+  const fontSize = obj.fontSize || 14;
+  const minTextH = Math.max(60, Math.ceil(fontSize * 1.6));
+
+  const prevTaHeight = ta.style.height;
+  ta.style.height = '0px';
+  const textH = Math.max(minTextH, ta.scrollHeight);
+  ta.style.height = prevTaHeight;
+
+  const neededH = STICKY_HANDLE_H + STICKY_BODY_PAD + textH + 8;
+  obj.h = Math.max(obj.h || 0, neededH, 160);
+  el.style.height = `${obj.h}px`;
+}
+
 function syncStickyAlignButtons(align) {
   document.querySelectorAll('#stb-align-menu .ttb-menu-item').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.align === align);
@@ -6746,6 +6801,7 @@ function applyStickyStyle(prop, value, options = {}) {
   if (prop === 'highlight') value = normalizeTextHighlight(value);
   obj[prop] = value;
   applyStickyTextToElement(ta, obj);
+  if (prop === 'fontSize') fitStickyNoteToContent(el, obj, ta);
   History.push();
   saveToStorage();
   if (!options.skipFocus) focusStickyText(selectedStickyId);
@@ -9446,7 +9502,7 @@ function focusStickyText(id, opts = {}) {
     const len = ta.value.length;
     if (opts.caretAtStart) {
       ta.selectionStart = ta.selectionEnd = 0;
-    } else if (opts.caretAtEnd !== false) {
+    } else if (opts.caretAtEnd) {
       ta.selectionStart = ta.selectionEnd = len;
     }
   });
@@ -9601,12 +9657,7 @@ function renderStickyFromObj(obj) {
   ta.addEventListener('input', () => {
     if (!canEditObject(obj)) return;
     obj.text = ta.value;
-    // auto-grow height
-    if (ta.scrollHeight > ta.clientHeight + 4) {
-      const newH = Math.max(obj.h, obj.h + (ta.scrollHeight - ta.clientHeight) + 10);
-      obj.h = newH;
-      el.style.height = newH + 'px';
-    }
+    fitStickyNoteToContent(el, obj, ta);
   });
   ta.addEventListener('blur', () => {
     obj.text = ta.value; // always sync text

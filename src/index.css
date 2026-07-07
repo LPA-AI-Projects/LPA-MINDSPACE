@@ -1236,6 +1236,8 @@ body.tool-eraser #eraser-cursor{display:block}
   white-space:pre-wrap;
   cursor:text;
   min-height:80px;
+  user-select:text;
+  -webkit-user-select:text;
 }
 .sticky-text::-webkit-scrollbar { width:3px; }
 .sticky-text::-webkit-scrollbar-thumb { background:rgba(0,0,0,0.15); border-radius:3px; }
@@ -1895,6 +1897,8 @@ body.tool-eraser #eraser-cursor{display:block}
    OBJECT TOOLBARS — shared chip UI
 ══════════════════════════════════════ */
 .ttb-chip {
+  display: inline-flex;
+  align-items: center;
   gap: 7px;
   padding: 5px 8px 5px 5px;
   min-width: 0;
@@ -2618,6 +2622,9 @@ body.tool-eraser #eraser-cursor{display:block}
   pointer-events: all;
   display: none;
 }
+.icon-obj.selected-icon .icon-resize-handle {
+  display: block;
+}
 .icon-rotate-handle {
   position: absolute;
   top: -30px;
@@ -2632,6 +2639,9 @@ body.tool-eraser #eraser-cursor{display:block}
   pointer-events: all;
   display: none;
   cursor: grab;
+}
+.icon-obj.selected-icon .icon-rotate-handle {
+  display: block;
 }
 .icon-rotate-handle:active { cursor: grabbing; }
 .icon-rotate-stem {

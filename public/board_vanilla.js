@@ -440,14 +440,23 @@ function getBottomToolbarClearance() {
 
 function isFloatingPanelVisible(el, id) {
   if (!el) return false;
-  if (id === 'sel-ai-popup') return el.classList.contains('is-open');
-  if (id === 'ai-bar') return el.classList.contains('visible');
-  if (id === 'sel-toolbar') return el.classList.contains('visible');
-  if (['shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar'].includes(id)) {
+  if (id === 'sel-ai-popup') return el.classList.contains('is-open') || el.style.display === 'block';
+  if (id === 'sticky-color-picker') return el.classList.contains('is-open') || el.style.display === 'flex';
+  if (id === 'ai-bar' || id === 'export-menu' || id === 'more-menu' || id === 'ctx-menu'
+    || id === 'shape-convert-popup' || id === 'export-progress' || id === 'ai-loading') {
     return el.classList.contains('visible');
   }
-  return true;
+  if (['shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar', 'sel-toolbar'].includes(id)) {
+    return el.classList.contains('visible');
+  }
+  return el.classList.contains('visible');
 }
+
+const FLOATING_PANEL_IDS = [
+  'ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar',
+  'sticky-toolbar', 'sel-ai-popup', 'export-menu', 'more-menu', 'ctx-menu', 'sticky-color-picker',
+  'shape-convert-popup', 'icon-picker', 'shape-picker-more', 'export-progress', 'ai-loading',
+];
 
 function getFloatingUiObstacleRects(excludeIds = []) {
   const rects = [];
@@ -459,13 +468,55 @@ function getFloatingUiObstacleRects(excludeIds = []) {
   const toolbar = document.getElementById('toolbar');
   if (toolbar) rects.push(toolbar.getBoundingClientRect());
 
-  ['ai-bar', 'sel-toolbar', 'shape-toolbar', 'text-toolbar', 'image-toolbar', 'icon-toolbar', 'sticky-toolbar', 'sel-ai-popup'].forEach((id) => {
+  FLOATING_PANEL_IDS.forEach((id) => {
     if (excludeIds.includes(id)) return;
     const el = document.getElementById(id);
     if (!el || !isFloatingPanelVisible(el, id)) return;
     rects.push(el.getBoundingClientRect());
   });
+
+  document.querySelectorAll('.ttb-menu.visible').forEach((menu) => {
+    if (excludeIds.includes(menu.id)) return;
+    rects.push(menu.getBoundingClientRect());
+  });
+
   return rects;
+}
+
+function dismissOtherPopups(keep = {}) {
+  if (!keep.export) hideExportMenu();
+  if (!keep.more) hideMoreMenu();
+  if (!keep.ctx) hideContextMenu();
+  if (!keep.stickyPicker) hideStickyPicker();
+  if (!keep.convert) hideConvertPopup();
+  if (!keep.aiBar) hideAiBar();
+  if (!keep.selAi) {
+    const selAi = document.getElementById('sel-ai-popup');
+    if (selAi) {
+      selAi.classList.remove('is-open');
+      selAi.style.display = 'none';
+    }
+  }
+  if (!keep.ttbMenus && typeof hideAllTtbMenus === 'function') hideAllTtbMenus();
+}
+
+function positionRectAvoidingUi(width, height, candidates, excludeIds = []) {
+  const obstacles = getFloatingUiObstacleRects(excludeIds);
+  for (const candidate of candidates) {
+    const pos = clampFloatingPanelPos(candidate.top, candidate.left, width, height);
+    const rect = {
+      top: pos.top,
+      left: pos.left,
+      right: pos.left + width,
+      bottom: pos.top + height,
+    };
+    if (!obstacles.some((o) => floatingRectsOverlap(rect, o))) {
+      return { top: Math.round(pos.top), left: Math.round(pos.left) };
+    }
+  }
+  const first = candidates[0] || { top: TOPBAR_CLEARANCE, left: FLOAT_UI_MARGIN };
+  const fallback = clampFloatingPanelPos(first.top, first.left, width, height);
+  return { top: Math.round(fallback.top), left: Math.round(fallback.left) };
 }
 
 function floatingRectsOverlap(a, b, pad = 8) {
@@ -493,27 +544,12 @@ function positionFloatingPanel(el, { anchorRect, excludeIds = [] }) {
     { top: anchorRect.top - height - FLOAT_UI_GAP, left: centerLeft },
     { top: anchorRect.bottom + FLOAT_UI_GAP, left: anchorRect.left },
     { top: anchorRect.top - height - FLOAT_UI_GAP, left: anchorRect.right - width },
+    { top: anchorRect.bottom + FLOAT_UI_GAP, left: anchorRect.right - width },
+    { top: anchorRect.top - height - FLOAT_UI_GAP, left: anchorRect.left },
   ];
-  const obstacles = getFloatingUiObstacleRects(excludeIds);
-
-  for (const candidate of candidates) {
-    const pos = clampFloatingPanelPos(candidate.top, candidate.left, width, height);
-    const rect = {
-      top: pos.top,
-      left: pos.left,
-      right: pos.left + width,
-      bottom: pos.top + height,
-    };
-    if (!obstacles.some((o) => floatingRectsOverlap(rect, o))) {
-      el.style.top = `${Math.round(pos.top)}px`;
-      el.style.left = `${Math.round(pos.left)}px`;
-      return;
-    }
-  }
-
-  const fallback = clampFloatingPanelPos(anchorRect.bottom + FLOAT_UI_GAP, centerLeft, width, height);
-  el.style.top = `${Math.round(fallback.top)}px`;
-  el.style.left = `${Math.round(fallback.left)}px`;
+  const pos = positionRectAvoidingUi(width, height, candidates, excludeIds);
+  el.style.top = `${pos.top}px`;
+  el.style.left = `${pos.left}px`;
 }
 
 function getActiveSelectionToolbarEl() {
@@ -898,6 +934,11 @@ function handleCanvasPointerDown(e) {
 
   if (tool === 'select') {
     if (isTransformHandleTarget(e.target)) return;
+    const stickyTa = target?.closest('.sticky-text');
+    const stickyNote = stickyTa?.closest('.sticky-note');
+    if (stickyTa && stickyNote?.dataset.objId && selectedIds.has(stickyNote.dataset.objId)) {
+      return;
+    }
     handleSelectMousedown(e);
     return;
   }
@@ -3424,7 +3465,12 @@ function clearAllSelections() {
     el.style.border = '1.5px solid transparent';
     el.querySelectorAll('.text-resize-handle').forEach(h => h.style.display = 'none');
   });
-  document.querySelectorAll('.icon-obj.selected-icon').forEach(el => el.classList.remove('selected-icon'));
+  document.querySelectorAll('.icon-obj.selected-icon').forEach(el => {
+    el.querySelectorAll('.icon-resize-handle').forEach(h => { h.style.display = ''; });
+    const rot = el.querySelector('.icon-rotate-handle');
+    if (rot) rot.style.display = '';
+    el.classList.remove('selected-icon');
+  });
   hideSelToolbar();
   hideStickyPicker();
 }
@@ -3614,7 +3660,10 @@ function handleSelectMousedown(e) {
     if (!addMode) clearAllSelections();
     selectObject(id, true);
     if (textClick) {
-      // Let the textarea receive the click so the caret lands at the pointer.
+      if (!selectedIds.has(id)) {
+        if (!addMode) clearAllSelections();
+        selectObject(id, true);
+      }
       return;
     }
     startObjDrag(e, id);
@@ -5202,7 +5251,6 @@ function renderImageObj(obj) {
         el.style.top    = obj.y + 'px';
         el.style.width  = obj.w + 'px';
         el.style.height = obj.h + 'px';
-        updateImageSizeLabel();
         if (document.getElementById('image-toolbar').classList.contains('visible')) {
           showImageToolbar(el);
         }
@@ -5258,7 +5306,6 @@ function showImageToolbar(el) {
   hideAllTtbMenus();
   hideSelToolbar();
   tb.classList.add('visible');
-  updateImageSizeLabel();
   requestAnimationFrame(() => {
     positionFloatingPanel(tb, {
       anchorRect: el.getBoundingClientRect(),
@@ -5271,14 +5318,6 @@ function showImageToolbar(el) {
 function hideImageToolbar() {
   hideAllTtbMenus();
   document.getElementById('image-toolbar')?.classList.remove('visible');
-}
-
-function updateImageSizeLabel() {
-  if (!selectedImageId) return;
-  const obj = state.objects.find(o => o.id === selectedImageId);
-  if (!obj) return;
-  const lbl = document.getElementById('itb-size-badge');
-  if (lbl) lbl.textContent = `${Math.round(obj.w)}×${Math.round(obj.h)}`;
 }
 
 // ── Fit image to viewport
@@ -5300,7 +5339,6 @@ function fitSelectedImage() {
     el.style.width = obj.w + 'px'; el.style.height = obj.h + 'px';
     showImageToolbar(el);
   }
-  updateImageSizeLabel();
   History.push(); saveToStorage();
 }
 
@@ -5736,9 +5774,6 @@ function selectIconObj(id, addMode) {
   const el = document.querySelector(`.icon-obj[data-obj-id="${id}"]`);
   if (!el) return;
   el.classList.add('selected-icon');
-  el.querySelectorAll('.icon-resize-handle').forEach((h) => { h.style.display = 'block'; });
-  const rot = el.querySelector('.icon-rotate-handle');
-  if (rot) rot.style.display = 'block';
   showIconToolbar(el);
   updateSelToolbar();
 }
@@ -6081,12 +6116,6 @@ function initIconPicker() {
 const _origClearAllForIcon = clearAllSelections;
 clearAllSelections = function() {
   _origClearAllForIcon();
-  document.querySelectorAll('.icon-obj.selected-icon').forEach(el => {
-    el.classList.remove('selected-icon');
-    el.querySelectorAll('.icon-resize-handle').forEach(h => { h.style.display = 'none'; });
-    const rot = el.querySelector('.icon-rotate-handle');
-    if (rot) rot.style.display = 'none';
-  });
   selectedIconId = null;
   hideIconToolbar();
 };
@@ -6167,12 +6196,18 @@ function positionTtbMenu(menu, btn) {
   const r = btn.getBoundingClientRect();
   const mw = menu.offsetWidth || 120;
   const mh = menu.offsetHeight || 40;
-  let left = r.left;
-  let top = r.bottom + 6;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (top + mh > window.innerHeight - getBottomToolbarClearance()) top = Math.max(TOPBAR_CLEARANCE, r.top - mh - 6);
-  menu.style.top = `${top}px`;
-  menu.style.left = `${Math.max(8, left)}px`;
+  const centerLeft = r.left + r.width / 2 - mw / 2;
+  const candidates = [
+    { top: r.bottom + 6, left: r.left },
+    { top: r.top - mh - 6, left: r.left },
+    { top: r.bottom + 6, left: centerLeft },
+    { top: r.top - mh - 6, left: centerLeft },
+    { top: r.bottom + 6, left: r.right - mw },
+    { top: r.top - mh - 6, left: r.right - mw },
+  ];
+  const pos = positionRectAvoidingUi(mw, mh, candidates, [menu.id]);
+  menu.style.top = `${pos.top}px`;
+  menu.style.left = `${pos.left}px`;
 }
 
 function menuIdToTriggerBtnId(menuId) {
@@ -6200,6 +6235,7 @@ function toggleTtbMenu(menuId, btn) {
     hideAllTtbMenus();
     return;
   }
+  dismissOtherPopups({ ttbMenus: true });
   hideAllTtbMenus();
   menu.classList.add('visible');
   btn.classList.add('active');
@@ -6606,21 +6642,32 @@ function applyStickyTextToElement(ta, obj) {
   ta.style.background = highlight === 'transparent' ? 'transparent' : highlight;
 }
 
-function fitStickyNoteToContent(el, obj, ta) {
+function fitStickyNoteToContent(el, obj, ta, options = {}) {
   if (!el || !obj || !ta) return;
   const STICKY_HANDLE_H = 28;
   const STICKY_BODY_PAD = 22;
-  const fontSize = obj.fontSize || 14;
-  const minTextH = Math.max(60, Math.ceil(fontSize * 1.6));
+  const minNoteH = 160;
+  const overflows = ta.scrollHeight > ta.clientHeight + 4;
 
-  const prevTaHeight = ta.style.height;
-  ta.style.height = '0px';
-  const textH = Math.max(minTextH, ta.scrollHeight);
-  ta.style.height = prevTaHeight;
+  if (!options.force && !overflows) return;
 
-  const neededH = STICKY_HANDLE_H + STICKY_BODY_PAD + textH + 8;
-  obj.h = Math.max(obj.h || 0, neededH, 160);
-  el.style.height = `${obj.h}px`;
+  let nextH = obj.h || minNoteH;
+  if (overflows) {
+    nextH = Math.max(nextH, obj.h + (ta.scrollHeight - ta.clientHeight) + 10);
+  } else if (options.force) {
+    const fontSize = obj.fontSize || 14;
+    const minTextH = Math.max(60, Math.ceil(fontSize * 1.6));
+    const prevTaHeight = ta.style.height;
+    ta.style.height = '0px';
+    const textH = Math.max(minTextH, ta.scrollHeight);
+    ta.style.height = prevTaHeight;
+    nextH = Math.max(nextH, STICKY_HANDLE_H + STICKY_BODY_PAD + textH + 8, minNoteH);
+  }
+
+  if (nextH > obj.h) {
+    obj.h = nextH;
+    el.style.height = `${obj.h}px`;
+  }
 }
 
 function syncStickyAlignButtons(align) {
@@ -6801,7 +6848,7 @@ function applyStickyStyle(prop, value, options = {}) {
   if (prop === 'highlight') value = normalizeTextHighlight(value);
   obj[prop] = value;
   applyStickyTextToElement(ta, obj);
-  if (prop === 'fontSize') fitStickyNoteToContent(el, obj, ta);
+  if (prop === 'fontSize') fitStickyNoteToContent(el, obj, ta, { force: true });
   History.push();
   saveToStorage();
   if (!options.skipFocus) focusStickyText(selectedStickyId);
@@ -6895,14 +6942,21 @@ function setStickyTextColor(color) {
 function showExportMenu(btn) {
   const menu = document.getElementById('export-menu');
   if (menu.classList.contains('visible')) { hideExportMenu(); return; }
+  dismissOtherPopups({ export: true });
   menu.classList.add('visible');
   requestAnimationFrame(() => {
     const r  = btn.getBoundingClientRect();
-    const mw = menu.offsetWidth;
-    let left = r.right - mw;
-    if (left < 8) left = 8;
-    menu.style.top  = (r.bottom + 6) + 'px';
-    menu.style.left = left + 'px';
+    const mw = menu.offsetWidth || 220;
+    const mh = menu.offsetHeight || 280;
+    const candidates = [
+      { top: r.bottom + 6, left: r.right - mw },
+      { top: r.top - mh - 6, left: r.right - mw },
+      { top: r.bottom + 6, left: r.left },
+      { top: r.top - mh - 6, left: r.left },
+    ];
+    const pos = positionRectAvoidingUi(mw, mh, candidates, ['export-menu']);
+    menu.style.top  = `${pos.top}px`;
+    menu.style.left = `${pos.left}px`;
   });
 }
 
@@ -8259,6 +8313,7 @@ function strokeLineEnds(pts) {
 
 function showConvertPopup(strokeId, recognized, pathEl) {
   hideConvertPopup();
+  dismissOtherPopups({ convert: true });
 
   const popup = document.getElementById('shape-convert-popup');
   if (!popup) return;
@@ -8334,12 +8389,17 @@ function showConvertPopup(strokeId, recognized, pathEl) {
   requestAnimationFrame(() => {
     const pw = popup.offsetWidth || 240;
     const ph = popup.offsetHeight || 44;
-    let left = sx - pw/2;
-    let top  = sy - ph - 14;
-    if (top < 60) top = sy + 20;
-    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
-    popup.style.left = left + 'px';
-    popup.style.top  = top  + 'px';
+    const candidates = [
+      { top: sy - ph - 14, left: sx - pw / 2 },
+      { top: sy + 20, left: sx - pw / 2 },
+      { top: sy - ph - 14, left: sx + 12 },
+      { top: sy + 20, left: sx + 12 },
+      { top: sy - ph - 14, left: sx - pw - 12 },
+      { top: sy + 20, left: sx - pw - 12 },
+    ];
+    const pos = positionRectAvoidingUi(pw, ph, candidates, ['shape-convert-popup']);
+    popup.style.left = `${pos.left}px`;
+    popup.style.top  = `${pos.top}px`;
   });
 
   // wire main button
@@ -8541,6 +8601,8 @@ function showContextMenu(e) {
 
   ctxTargetType = obj.type;
 
+  dismissOtherPopups({ ctx: true });
+
   // update lock label
   const lockLabel = document.getElementById('ctx-lock-label');
   if (lockLabel) lockLabel.textContent = obj.locked ? 'Unlock' : 'Lock';
@@ -8562,12 +8624,15 @@ function showContextMenu(e) {
   requestAnimationFrame(() => {
     const mw = menu.offsetWidth  || 180;
     const mh = menu.offsetHeight || 200;
-    let left = e.clientX + 4;
-    let top  = e.clientY + 4;
-    if (left + mw > window.innerWidth  - 8) left = e.clientX - mw - 4;
-    if (top  + mh > window.innerHeight - 8) top  = e.clientY - mh - 4;
-    menu.style.left = Math.max(8, left) + 'px';
-    menu.style.top  = Math.max(60, top) + 'px';
+    const candidates = [
+      { top: e.clientY + 4, left: e.clientX + 4 },
+      { top: e.clientY - mh - 4, left: e.clientX + 4 },
+      { top: e.clientY + 4, left: e.clientX - mw - 4 },
+      { top: e.clientY - mh - 4, left: e.clientX - mw - 4 },
+    ];
+    const pos = positionRectAvoidingUi(mw, mh, candidates, ['ctx-menu']);
+    menu.style.left = `${pos.left}px`;
+    menu.style.top  = `${pos.top}px`;
   });
 
   // select only when the current user can edit it
@@ -8889,18 +8954,21 @@ function positionAiBar(btn) {
   const r = btn.getBoundingClientRect();
   const bw = bar.offsetWidth || 340;
   const bh = bar.offsetHeight || 44;
-  let left = r.left + r.width / 2 - bw / 2;
-  let top = r.top - bh - 12;
-  if (left + bw > window.innerWidth - 8) left = window.innerWidth - bw - 8;
-  if (left < 8) left = 8;
-  if (top < TOPBAR_CLEARANCE) top = r.bottom + 10;
-  bar.style.left = `${Math.round(left)}px`;
-  bar.style.top = `${Math.round(top)}px`;
+  const candidates = [
+    { top: r.top - bh - 12, left: r.left + r.width / 2 - bw / 2 },
+    { top: r.bottom + 12, left: r.left + r.width / 2 - bw / 2 },
+    { top: r.top - bh - 12, left: r.left },
+    { top: r.bottom + 12, left: r.left },
+  ];
+  const pos = positionRectAvoidingUi(bw, bh, candidates, ['ai-bar']);
+  bar.style.left = `${pos.left}px`;
+  bar.style.top = `${pos.top}px`;
 }
 
 function showAiBar(btn) {
   const bar = document.getElementById('ai-bar');
   if (!bar) return;
+  dismissOtherPopups({ aiBar: true });
   bar.classList.add('visible');
   btn?.classList.add('open');
   requestAnimationFrame(() => {
@@ -9163,6 +9231,8 @@ function showSelectionAiPrompt() {
   const popup = document.getElementById('sel-ai-popup');
   if (!popup) return;
 
+  dismissOtherPopups({ selAi: true, ttbMenus: true });
+
   popup.classList.add('is-open');
   popup.style.display = '';
   requestAnimationFrame(() => {
@@ -9303,18 +9373,21 @@ async function submitSelectionAi() {
 function toggleMoreMenu(btn) {
   const menu = document.getElementById('more-menu');
   if (menu.classList.contains('visible')) { hideMoreMenu(); return; }
+  dismissOtherPopups({ more: true });
   menu.classList.add('visible');
   requestAnimationFrame(() => {
     const r = btn.getBoundingClientRect();
     const mw = menu.offsetWidth || 220;
     const mh = menu.offsetHeight || 300;
-    let left = r.left + r.width / 2 - mw / 2;
-    let top = r.top - mh - 8;
-    if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-    if (left < 8) left = 8;
-    if (top < TOPBAR_CLEARANCE) top = r.bottom + 8;
-    menu.style.top = `${Math.round(top)}px`;
-    menu.style.left = `${Math.round(left)}px`;
+    const candidates = [
+      { top: r.top - mh - 8, left: r.left + r.width / 2 - mw / 2 },
+      { top: r.bottom + 8, left: r.left + r.width / 2 - mw / 2 },
+      { top: r.top - mh - 8, left: r.left },
+      { top: r.bottom + 8, left: r.left },
+    ];
+    const pos = positionRectAvoidingUi(mw, mh, candidates, ['more-menu']);
+    menu.style.top = `${pos.top}px`;
+    menu.style.left = `${pos.left}px`;
   });
 }
 
@@ -9652,7 +9725,9 @@ function renderStickyFromObj(obj) {
     if (!canEditObject(obj)) {
       ta.blur();
       notifyNotYourWork();
+      return;
     }
+    if (!selectedIds.has(obj.id)) selectSticky(obj.id);
   });
   ta.addEventListener('input', () => {
     if (!canEditObject(obj)) return;
@@ -9660,11 +9735,10 @@ function renderStickyFromObj(obj) {
     fitStickyNoteToContent(el, obj, ta);
   });
   ta.addEventListener('blur', () => {
-    obj.text = ta.value; // always sync text
-    History.push();      // one push covers both place + type as single undo step
+    obj.text = ta.value;
+    History.push();
     saveToStorage();
   });
-  ta.addEventListener('focus', () => selectSticky(obj.id));
 
   // ── MENU button
   const menuBtn = el.querySelector('.sticky-menu-btn');
@@ -9714,7 +9788,11 @@ function selectSticky(id) {
   }
   // use unified selectObject if available
   if (typeof selectObject === 'function') {
-    selectObject(id, false);
+    if (!selectedIds.has(id)) {
+      selectObject(id, false);
+    } else {
+      selectedStickyId = id;
+    }
   } else {
     if (selectedStickyId && selectedStickyId !== id) {
       const prev = document.querySelector(`.sticky-note[data-obj-id="${selectedStickyId}"]`);
@@ -9824,18 +9902,27 @@ function showStickyPicker(id, cx, cy) {
   stickyPickerTargetId = id;
   if (obj) updatePickerSwatchActive(normalizeStickyColorName(obj.color));
 
+  dismissOtherPopups({ stickyPicker: true });
+
   const picker = document.getElementById('sticky-color-picker');
   picker.classList.add('is-open');
   picker.style.display = 'flex';
 
-  // position near the click, keep inside viewport
-  const pw = 160, ph = 160;
-  let left = cx + 8;
-  let top  = cy - 10;
-  if (left + pw > window.innerWidth  - 8) left = cx - pw - 8;
-  if (top  + ph > window.innerHeight - 8) top  = window.innerHeight - ph - 8;
-  picker.style.left = left + 'px';
-  picker.style.top  = top  + 'px';
+  requestAnimationFrame(() => {
+    const pw = picker.offsetWidth || 160;
+    const ph = picker.offsetHeight || 160;
+    const candidates = [
+      { top: cy + 8, left: cx + 8 },
+      { top: cy - ph - 8, left: cx + 8 },
+      { top: cy + 8, left: cx - pw - 8 },
+      { top: cy - ph - 8, left: cx - pw - 8 },
+      { top: cy + 8, left: cx - pw / 2 },
+      { top: cy - ph - 8, left: cx - pw / 2 },
+    ];
+    const pos = positionRectAvoidingUi(pw, ph, candidates, ['sticky-color-picker']);
+    picker.style.left = `${pos.left}px`;
+    picker.style.top  = `${pos.top}px`;
+  });
 }
 
 function hideStickyPicker() {

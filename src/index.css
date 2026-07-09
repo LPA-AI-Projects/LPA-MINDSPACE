@@ -709,12 +709,61 @@ body.read-only-mode #canvas-world > *{
   transition:transform .15s var(--ease-out), background .15s, border-color .15s, box-shadow .15s;
   flex-shrink:0;
 }
-.tool-btn svg{
+.tool-btn svg,
+.tool-btn-icon--img{
   width:26px;
   height:26px;
   pointer-events:none;
   transition:transform .15s var(--ease-out);
   filter:drop-shadow(0 1px 1px rgba(20,20,20,0.1));
+}
+.tool-btn-icon--img{
+  object-fit:contain;
+  display:block;
+}
+#tool-hand .tool-btn-icon--img{
+  width:30px;
+  height:30px;
+  transform:translateX(3px);
+}
+.tool-btn:hover #tool-hand .tool-btn-icon--img{
+  transform:translateX(3px) scale(1.06);
+}
+#tool-pen .tool-btn-icon--img{
+  width:34px;
+  height:34px;
+}
+#tool-text .tool-btn-icon--img{
+  width:40px;
+  height:40px;
+}
+#tool-eraser .tool-btn-icon--img{
+  width:36px;
+  height:36px;
+}
+#tool-sticky .tool-btn-icon--img{
+  width:38px;
+  height:38px;
+}
+#tool-shape .tool-btn-icon--img{
+  width:38px;
+  height:38px;
+}
+#tool-icon .tool-btn-icon--img{
+  width:84px;
+  height:84px;
+}
+#tool-image .tool-btn-icon--img{
+  width:38px;
+  height:38px;
+}
+#tool-stamp .tool-btn-icon--img{
+  width:40px;
+  height:40px;
+}
+#tool-ai .tool-btn-icon--img{
+  width:40px;
+  height:40px;
 }
 .tool-btn:hover{
   background:var(--tool-bg);
@@ -722,7 +771,8 @@ body.read-only-mode #canvas-world > *{
   transform:translateY(-2px) scale(1.04);
   box-shadow:0 6px 16px rgba(20,20,20,0.12);
 }
-.tool-btn:hover svg{transform:scale(1.06)}
+.tool-btn:hover svg,
+.tool-btn:hover .tool-btn-icon--img{transform:scale(1.06)}
 .tool-btn.active{
   background:var(--tool-bg);
   border-color:color-mix(in srgb, var(--tool-color) 40%, transparent);

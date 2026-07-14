@@ -288,6 +288,8 @@ function getLiveBoardAccess() {
 function isFacilitator() {
   const access = getLiveBoardAccess();
   if (!access.sessionId) return true;
+  // Shared-trainer gate: only allowlisted trainer email can act as facilitator.
+  if (access.isTrainer === false) return false;
   return access.role === 'facilitator';
 }
 
@@ -2176,6 +2178,123 @@ function updateFacilitatorUi() {
   if (activityBtn) {
     activityBtn.classList.toggle('visible', !!access.sessionId);
   }
+
+  updateSessionLifecycleMenu();
+}
+
+function isSessionClosedStatus(status) {
+  const s = String(status || '').toLowerCase();
+  return s === 'closed' || s === 'ended' || s === 'archived';
+}
+
+function updateSessionLifecycleMenu() {
+  const access = getLiveBoardAccess();
+  const saveCloseBtn = document.getElementById('mm-save-close');
+  const reopenBtn = document.getElementById('mm-reopen-session');
+  const sessionSep = document.getElementById('mm-session-sep');
+  if (!saveCloseBtn || !reopenBtn) return;
+
+  const isFac = isFacilitator() && !!access.sessionId;
+  const closed = isSessionClosedStatus(access.sessionStatus);
+  const showSaveClose = isFac && canEditBoardNow() && !closed;
+  const showReopen = isFac && (access.canReopen || closed || !canEditBoardNow());
+
+  saveCloseBtn.style.display = showSaveClose ? '' : 'none';
+  reopenBtn.style.display = showReopen ? '' : 'none';
+  if (sessionSep) sessionSep.style.display = (showSaveClose || showReopen) ? '' : 'none';
+}
+
+function applySessionAccessState({ canEdit, sessionStatus, canReopen, toastMessage } = {}) {
+  const access = getLiveBoardAccess();
+  if (typeof canEdit === 'boolean') access.canEdit = canEdit;
+  if (sessionStatus != null) access.sessionStatus = sessionStatus;
+  if (typeof canReopen === 'boolean') access.canReopen = canReopen;
+  window.boardAccess = access;
+  applyAccessModeUi({ skipToast: !toastMessage, toastMessage });
+  updateSessionLifecycleMenu();
+}
+
+function broadcastSessionStatus(status) {
+  if (!boardSyncChannel || !boardSyncChannelReady) return;
+  boardSyncChannel.send({
+    type: 'broadcast',
+    event: 'session_status',
+    payload: {
+      status,
+      senderId: realtimeClientId,
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+async function saveAndCloseSession() {
+  hideMoreMenu();
+  const access = getLiveBoardAccess();
+  if (!isFacilitator() || !access.sessionId || access.isTrainer === false) {
+    showToast('Only the shared trainer account can save and close this session');
+    return;
+  }
+  if (!canEditBoardNow()) {
+    showToast('Reopen the session first to edit, then save and close');
+    return;
+  }
+
+  try {
+    saveToStorage();
+    await flushSupabaseSaveQueue();
+    if (window.supabaseStorageSave && !supabaseSaveInFlight) {
+      await window.supabaseStorageSave(prepareBoardStateForPersistence(getCurrentBoardState()));
+    }
+
+    if (window.supabaseClient) {
+      const { error } = await window.supabaseClient
+        .from('sessions')
+        .update({ status: 'closed' })
+        .eq('id', access.sessionId);
+      if (error) throw error;
+    }
+
+    applySessionAccessState({
+      canEdit: false,
+      sessionStatus: 'closed',
+      canReopen: true,
+      toastMessage: 'Board saved and session closed',
+    });
+    broadcastSessionStatus('closed');
+  } catch (err) {
+    console.error('[session] save and close failed', err);
+    showToast('Could not close session: ' + (err.message || 'error'));
+  }
+}
+
+async function reopenSession() {
+  hideMoreMenu();
+  const access = getLiveBoardAccess();
+  if (!isFacilitator() || !access.sessionId || access.isTrainer === false) {
+    showToast('Only the shared trainer account can reopen this session');
+    return;
+  }
+
+  try {
+    if (window.supabaseClient) {
+      const { error } = await window.supabaseClient
+        .from('sessions')
+        .update({ status: 'active' })
+        .eq('id', access.sessionId);
+      if (error) throw error;
+    }
+
+    applySessionAccessState({
+      canEdit: true,
+      sessionStatus: 'active',
+      canReopen: false,
+      toastMessage: 'Session reopened — editing enabled',
+    });
+    broadcastSessionStatus('active');
+  } catch (err) {
+    console.error('[session] reopen failed', err);
+    showToast('Could not reopen session: ' + (err.message || 'error'));
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -3155,6 +3274,26 @@ function initRealtimeBoardSync() {
     if (!payload || payload.clientId === realtimeClientId) return;
     playBoardStampAnimation(payload);
   });
+  boardSyncChannel.on('broadcast', { event: 'session_status' }, ({ payload }) => {
+    if (!payload || payload.senderId === realtimeClientId) return;
+    const status = payload.status || 'active';
+    const closed = isSessionClosedStatus(status);
+    if (closed) {
+      applySessionAccessState({
+        canEdit: false,
+        sessionStatus: status,
+        canReopen: isFacilitator(),
+        toastMessage: 'Trainer closed this session — view only',
+      });
+    } else {
+      applySessionAccessState({
+        canEdit: isFacilitator() || isParticipant(),
+        sessionStatus: status,
+        canReopen: false,
+        toastMessage: 'Session is live again',
+      });
+    }
+  });
   boardSyncChannel.on(
     'postgres_changes',
     {
@@ -3391,9 +3530,10 @@ window.addEventListener('pageshow', () => {
   pullLatestBoardStateFromSupabase();
 });
 
-function applyAccessModeUi() {
+function applyAccessModeUi(options = {}) {
+  const access = getLiveBoardAccess();
   const avatar = document.querySelector('.tb-avatar');
-  if (avatar) avatar.textContent = ((boardAccess.userName || 'U')[0] || 'U').toUpperCase();
+  if (avatar) avatar.textContent = ((access.userName || 'U')[0] || 'U').toUpperCase();
 
   const boardNameInput = document.getElementById('boardName');
   if (boardNameInput && isParticipant()) {
@@ -3403,16 +3543,30 @@ function applyAccessModeUi() {
 
   updateFacilitatorUi();
 
-  if (!isReadOnlyMode()) return;
+  if (!isReadOnlyMode()) {
+    document.body.classList.remove('read-only-mode');
+    if (boardNameInput && isFacilitator()) {
+      boardNameInput.removeAttribute('readonly');
+      boardNameInput.style.opacity = '';
+    }
+    if (options.toastMessage) showToast(options.toastMessage);
+    return;
+  }
 
   document.body.classList.add('read-only-mode');
   state.tool = 'hand';
-  document.body.className = 'tool-hand read-only-mode';
+  document.body.classList.add('tool-hand');
+  // Keep other classes; only ensure hand + read-only
+  document.body.className = Array.from(new Set(
+    `${document.body.className} tool-hand read-only-mode`.split(/\s+/).filter(Boolean)
+  )).join(' ');
   if (boardNameInput) {
     boardNameInput.setAttribute('readonly', 'readonly');
     boardNameInput.style.opacity = '0.8';
   }
-  showToast('View-only mode');
+  if (!options.skipToast) {
+    showToast(options.toastMessage || 'View-only mode');
+  }
 }
 
 function userColorFromId(id) {
@@ -9506,6 +9660,7 @@ async function submitSelectionAi() {
 function toggleMoreMenu(btn) {
   const menu = document.getElementById('more-menu');
   if (menu.classList.contains('visible')) { hideMoreMenu(); return; }
+  updateSessionLifecycleMenu();
   dismissOtherPopups({ more: true });
   menu.classList.add('visible');
   requestAnimationFrame(() => {
@@ -9585,6 +9740,10 @@ function toggleFullscreen() {
 
 // ── Clear board
 function clearBoard() {
+  if (!canEditBoardNow()) {
+    showToast('View-only — reopen the session to edit');
+    return;
+  }
   const count = state.objects.length;
   if (count === 0) { showToast('Board is already empty'); return; }
   if (!confirm(`Clear the entire board? This will delete all ${count} objects and cannot be undone.`)) return;
@@ -10225,6 +10384,8 @@ Object.assign(window, {
   hideAiBar,
   toggleMoreMenu,
   hideMoreMenu,
+  saveAndCloseSession,
+  reopenSession,
   zoomIn,
   zoomOut,
   resetZoom,

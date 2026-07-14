@@ -491,6 +491,15 @@
     Full screen
   </button>
   <div class="mm-sep"></div>
+  <button class="mm-item" id="mm-save-close" onclick="saveAndCloseSession()" style="display:none">
+    <div class="mm-item-icon" style="background:rgba(46,157,145,0.12)">💾</div>
+    Save and close board
+  </button>
+  <button class="mm-item" id="mm-reopen-session" onclick="reopenSession()" style="display:none">
+    <div class="mm-item-icon" style="background:rgba(79,113,242,0.12)">▶</div>
+    Reopen session
+  </button>
+  <div class="mm-sep" id="mm-session-sep" style="display:none"></div>
   <button class="mm-item" onclick="showBoardInfo(); hideMoreMenu()">
     <div class="mm-item-icon" style="background:rgba(46,157,145,0.12)">📊</div>
     Board info

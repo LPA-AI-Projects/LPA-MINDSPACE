@@ -3,8 +3,15 @@ import { supabase } from './supabaseClient';
 import boardHtml from './board.html?raw';
 import './index.css';
 import { buildSessionUrl, resolveSessionId } from './sessionRoutes';
+import { isTrainerEmail } from './trainerAuth';
 
 const EDIT_ROLES = new Set(['facilitator', 'participant']);
+const CREATE_INTENT_KEY = 'lpa-session-create-intent';
+const CLOSED_STATUSES = new Set(['closed', 'ended', 'archived']);
+
+function isSessionClosed(status) {
+  return CLOSED_STATUSES.has(String(status || '').toLowerCase());
+}
 
 function getDisplayName(user) {
   if (!user) return 'Guest';
@@ -57,9 +64,10 @@ function logSessionError(step, error) {
   if (error) console.error(`[session] ${step}:`, error.message || error);
 }
 
-async function loadSessionScopedBoard(sessionId, userId) {
+async function loadSessionScopedBoard(sessionId, userId, userEmail) {
   if (!sessionId) return null;
   try {
+    const trainer = isTrainerEmail(userEmail);
     const { data: sessionRowInitial, error: sessionLookupError } = await supabase
       .from('sessions')
       .select('id, board_id, created_by, facilitator_ids, status')
@@ -71,9 +79,17 @@ async function loadSessionScopedBoard(sessionId, userId) {
     }
 
     let sessionRow = sessionRowInitial;
+    let createdNow = false;
 
-    // Create reusable session on first access (creator becomes facilitator).
+    // Only the shared trainer account that just logged in with this Batch ID may create.
+    const createIntent = localStorage.getItem(CREATE_INTENT_KEY);
+    const canCreate = trainer && createIntent === sessionId;
+
     if (!sessionRow) {
+      if (!canCreate) {
+        logSessionError('join session', new Error(`session ${sessionId} not found (create not allowed)`));
+        return { notFound: true };
+      }
       const { data: bootstrapped, error: bootstrapError } = await supabase.rpc(
         'bootstrap_training_session',
         { p_session_id: sessionId },
@@ -83,21 +99,24 @@ async function loadSessionScopedBoard(sessionId, userId) {
         logSessionError('bootstrap session', bootstrapError);
         return null;
       }
+      createdNow = true;
       sessionRow = {
         id: bootstrapRow.session_id || sessionId,
         board_id: bootstrapRow.board_id,
         created_by: bootstrapRow.created_by,
         facilitator_ids: bootstrapRow.facilitator_ids,
-        status: bootstrapRow.status,
+        status: bootstrapRow.status || 'active',
       };
+    }
+
+    if (createIntent === sessionId) {
+      localStorage.removeItem(CREATE_INTENT_KEY);
     }
 
     if (!sessionRow?.board_id) return null;
 
-    const facilitatorIds = Array.isArray(sessionRow.facilitator_ids) ? sessionRow.facilitator_ids : [];
-    const defaultRole = sessionRow.created_by === userId || facilitatorIds.includes(userId)
-      ? 'facilitator'
-      : 'participant';
+    // Shared trainer account is always facilitator; everyone else is participant.
+    const defaultRole = trainer ? 'facilitator' : 'participant';
 
     const { data: participantInitial, error: participantLookupError } = await supabase
       .from('session_participants')
@@ -113,6 +132,10 @@ async function loadSessionScopedBoard(sessionId, userId) {
     let participant = participantInitial;
 
     if (!participant) {
+      // Closed sessions: only trainers can attach as facilitator; block new student joins.
+      if (isSessionClosed(sessionRow.status) && defaultRole !== 'facilitator') {
+        return { closed: true, sessionRow };
+      }
       const { data: inserted, error: participantInsertError } = await supabase
         .from('session_participants')
         .insert({
@@ -127,14 +150,25 @@ async function loadSessionScopedBoard(sessionId, userId) {
         logSessionError('create participant', participantInsertError);
         return null;
       }
-      participant = inserted || { role: defaultRole, can_override_workspace: defaultRole !== 'participant' };
+      participant = inserted || { role: defaultRole, can_override_workspace: defaultRole === 'facilitator' };
     } else {
-      // Keep lightweight heartbeat for activity panel.
-      supabase
-        .from('session_participants')
-        .update({ last_seen_at: new Date().toISOString() })
-        .eq('session_id', sessionId)
-        .eq('user_id', userId);
+      // Keep trainer role sticky if they join again as the shared account.
+      if (trainer && participant.role !== 'facilitator') {
+        const { data: upgraded } = await supabase
+          .from('session_participants')
+          .update({ role: 'facilitator', can_override_workspace: true, last_seen_at: new Date().toISOString() })
+          .eq('session_id', sessionId)
+          .eq('user_id', userId)
+          .select('role, can_override_workspace')
+          .single();
+        if (upgraded) participant = upgraded;
+      } else {
+        supabase
+          .from('session_participants')
+          .update({ last_seen_at: new Date().toISOString() })
+          .eq('session_id', sessionId)
+          .eq('user_id', userId);
+      }
     }
 
     // Board RLS requires session membership — fetch only after participant row exists.
@@ -144,11 +178,30 @@ async function loadSessionScopedBoard(sessionId, userId) {
       return null;
     }
 
+    const role = trainer ? 'facilitator' : (participant?.role || defaultRole);
+    const sessionStatus = sessionRow.status || 'active';
+    const closed = isSessionClosed(sessionStatus);
+
     return {
       boardRecord,
       sessionRow,
-      role: participant?.role || defaultRole,
-      canOverrideWorkspace: !!participant?.can_override_workspace,
+      role,
+      canOverrideWorkspace: role === 'facilitator',
+      sessionStatus,
+      createdNow,
+      isTrainer: trainer,
+      // Existing / closed boards open view-only for trainers until they click Reopen.
+      // Newly created boards start editable. Closed sessions are view-only for everyone.
+      canEdit: closed
+        ? false
+        : createdNow
+          ? EDIT_ROLES.has(role)
+          : role === 'participant'
+            ? true
+            : role === 'facilitator'
+              ? false
+              : false,
+      canReopen: role === 'facilitator' && trainer && (!createdNow || closed),
     };
   } catch (err) {
     logSessionError('load session scoped board', err);
@@ -156,10 +209,10 @@ async function loadSessionScopedBoard(sessionId, userId) {
   }
 }
 
-async function loadSessionScopedBoardWithRetry(sessionId, userId, attempts = 4) {
+async function loadSessionScopedBoardWithRetry(sessionId, userId, userEmail, attempts = 4) {
   for (let i = 0; i < attempts; i += 1) {
     await supabase.auth.getSession();
-    const result = await loadSessionScopedBoard(sessionId, userId);
+    const result = await loadSessionScopedBoard(sessionId, userId, userEmail);
     if (result) return result;
     if (i < attempts - 1) {
       await new Promise((resolve) => setTimeout(resolve, 350 * (i + 1)));
@@ -195,26 +248,47 @@ export default function Board({ session }) {
       let role = 'participant';
       let canOverrideWorkspace = false;
       let resolvedSessionId = sessionId || null;
+      let sessionStatus = 'active';
+      let canReopen = false;
+      let sessionCanEdit = null;
       const lastBoardId = localStorage.getItem('lpa-last-board-id');
       const lastSessionId = localStorage.getItem('lpa-last-session-id');
 
       if (sessionId) {
-        const sessionScoped = await loadSessionScopedBoardWithRetry(sessionId, userId);
+        const sessionScoped = await loadSessionScopedBoardWithRetry(sessionId, userId, userEmail);
         if (!sessionScoped) {
           setLoadError('Could not join this session yet. Please refresh the page or try again in a moment.');
+          return;
+        }
+        if (sessionScoped.notFound) {
+          setLoadError(
+            isTrainerEmail(userEmail)
+              ? 'Session not found. Log in again with this Session ID / Batch ID to create it.'
+              : 'Session not found. Ask your trainer for a valid session link.',
+          );
+          return;
+        }
+        if (sessionScoped.closed && !sessionScoped.boardRecord) {
+          setLoadError('This training session is closed. Only the trainer can reopen it.');
           return;
         }
         boardRecord = sessionScoped.boardRecord;
         role = sessionScoped.role;
         canOverrideWorkspace = sessionScoped.canOverrideWorkspace;
         resolvedSessionId = sessionScoped.sessionRow.id;
+        sessionStatus = sessionScoped.sessionStatus || sessionScoped.sessionRow?.status || 'active';
+        canReopen = !!sessionScoped.canReopen;
+        sessionCanEdit = sessionScoped.canEdit;
       } else {
-        const sessionScoped = await loadSessionScopedBoardWithRetry(lastSessionId, userId);
-        if (sessionScoped) {
+        const sessionScoped = await loadSessionScopedBoardWithRetry(lastSessionId, userId, userEmail);
+        if (sessionScoped?.boardRecord) {
           boardRecord = sessionScoped.boardRecord;
           role = sessionScoped.role;
           canOverrideWorkspace = sessionScoped.canOverrideWorkspace;
           resolvedSessionId = sessionScoped.sessionRow.id;
+          sessionStatus = sessionScoped.sessionStatus || sessionScoped.sessionRow?.status || 'active';
+          canReopen = !!sessionScoped.canReopen;
+          sessionCanEdit = sessionScoped.canEdit;
         }
       }
 
@@ -254,7 +328,8 @@ export default function Board({ session }) {
         }
 
         if (resolvedSessionId) {
-          canEdit = EDIT_ROLES.has(role);
+          canEdit = sessionCanEdit != null ? !!sessionCanEdit : EDIT_ROLES.has(role);
+          if (isSessionClosed(sessionStatus)) canEdit = false;
         } else if (shareBoardId) {
           const { canView, canEdit: shareCanEdit } = getBoardAccess(
             boardRecord,
@@ -290,10 +365,13 @@ export default function Board({ session }) {
         userEmail,
         userName,
         canEdit,
+        sessionStatus,
+        canReopen: !!canReopen && role === 'facilitator' && isTrainerEmail(userEmail),
+        isTrainer: isTrainerEmail(userEmail),
       };
 
       window.supabaseStorageSave = async (stateObj) => {
-        if (!canEdit) return;
+        if (!(window.boardAccess?.canEdit ?? canEdit)) return;
         if (boardId) {
           const { error } = await supabase.from('boards').update({ state: stateObj }).eq('id', boardId);
           if (error) console.error('[board] Supabase state save failed', error.message);

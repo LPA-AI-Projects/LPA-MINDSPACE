@@ -6,7 +6,10 @@ import {
   getSessionIdFromPath,
   normalizeSessionSlug,
 } from './sessionRoutes'
+import { isTrainerEmail, TRAINER_LOGIN_HINT } from './trainerAuth'
 import './index.css'
+
+const CREATE_INTENT_KEY = 'lpa-session-create-intent'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -14,6 +17,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [joinSession, setJoinSession] = useState(() => getSessionIdFromPath() || '')
   const [loading, setLoading] = useState(true)
+  const [formError, setFormError] = useState('')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -35,27 +39,77 @@ function App() {
 
   const handleLogin = async (e) => {
     e.preventDefault()
+    setFormError('')
     setLoading(true)
 
     const pathSession = getSessionIdFromPath()
     const sessionSlug = normalizeSessionSlug(joinSession) || pathSession
+    const normalizedEmail = (email || '').trim().toLowerCase()
+    const isStudentJoin = !!pathSession
+    const trainerLogin = !isStudentJoin
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
-      if (error.message.includes('Invalid login credentials')) {
-         const { data, error: signUpError } = await supabase.auth.signUp({ email, password })
-         if (signUpError) {
-             alert(signUpError.message)
-         } else {
-             if (data.user && data.user.identities && data.user.identities.length === 0) {
-                 alert("Email already in use, or please check your inbox for confirmation link.")
-             } else {
-                 alert('Signup successful! Check your email to confirm, OR disable "Confirm Email" in your Supabase Auth dashboard.')
-             }
-         }
-      } else {
-         alert(error.message)
+    // Trainer home login: shared trainer account + mandatory Batch ID.
+    if (trainerLogin) {
+      if (!sessionSlug) {
+        setFormError('Enter a Session ID / Batch ID to continue.')
+        setLoading(false)
+        return
       }
+      if (!isTrainerEmail(normalizedEmail)) {
+        setFormError(`Only the shared trainer account can open or create sessions. ${TRAINER_LOGIN_HINT}`)
+        setLoading(false)
+        return
+      }
+      localStorage.setItem(CREATE_INTENT_KEY, sessionSlug)
+    } else {
+      // Students join via share link — never auto-create a missing session.
+      localStorage.removeItem(CREATE_INTENT_KEY)
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    })
+
+    if (error) {
+      localStorage.removeItem(CREATE_INTENT_KEY)
+
+      // Trainers use a pre-created shared account — no self-signup on trainer flow.
+      if (trainerLogin) {
+        setFormError(
+          error.message.includes('Invalid login credentials')
+            ? 'Invalid trainer email or password. Use the shared trainer account from your admin.'
+            : error.message,
+        )
+        setLoading(false)
+        return
+      }
+
+      // Students may sign up on first join.
+      if (error.message.includes('Invalid login credentials')) {
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+        })
+        if (signUpError) {
+          alert(signUpError.message)
+        } else if (data.user && data.user.identities && data.user.identities.length === 0) {
+          alert('Email already in use, or please check your inbox for confirmation link.')
+        } else {
+          alert('Signup successful! Check your email to confirm, OR disable "Confirm Email" in your Supabase Auth dashboard.')
+        }
+      } else {
+        alert(error.message)
+      }
+      setLoading(false)
+      return
+    }
+
+    // Defense-in-depth: signed-in user on trainer path must be an allowlisted trainer.
+    if (trainerLogin && !isTrainerEmail(normalizedEmail)) {
+      await supabase.auth.signOut()
+      localStorage.removeItem(CREATE_INTENT_KEY)
+      setFormError(`Only the shared trainer account can open sessions. ${TRAINER_LOGIN_HINT}`)
       setLoading(false)
       return
     }
@@ -86,9 +140,10 @@ function App() {
 
   if (!session) {
     const pathSession = getSessionIdFromPath()
-    const ctaLabel = pathSession || joinSession.trim()
+    const isStudentJoin = !!pathSession
+    const ctaLabel = isStudentJoin
       ? 'Log in & join session'
-      : 'Log in'
+      : 'Trainer log in'
 
     return (
       <div className="auth-page">
@@ -117,7 +172,11 @@ function App() {
           <div className="auth-card">
             <div className="auth-card-header">
               <h2>Welcome back</h2>
-              <p>Sign in to open your workspace or join a training session.</p>
+              <p>
+                {isStudentJoin
+                  ? 'Sign in to join the shared training session.'
+                  : 'Trainers: use the shared trainer account plus a Session ID / Batch ID.'}
+              </p>
             </div>
 
             {pathSession ? (
@@ -129,11 +188,13 @@ function App() {
 
             <form className="auth-form" onSubmit={handleLogin}>
               <div className="auth-field">
-                <label htmlFor="auth-email">Email</label>
+                <label htmlFor="auth-email">
+                  {isStudentJoin ? 'Email' : 'Trainer email'}
+                </label>
                 <input
                   id="auth-email"
                   type="email"
-                  placeholder="you@company.com"
+                  placeholder={isStudentJoin ? 'you@company.com' : 'trainer@learnerspoint.com'}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   autoComplete="email"
@@ -152,25 +213,33 @@ function App() {
                   autoComplete="current-password"
                   required
                 />
+                {!isStudentJoin ? (
+                  <span className="auth-field-hint">{TRAINER_LOGIN_HINT}</span>
+                ) : null}
               </div>
 
               <div className="auth-field">
                 <label htmlFor="join-session">
-                  Session name {pathSession ? '(from link)' : '(optional)'}
+                  {isStudentJoin ? 'Session ID / Batch ID (from link)' : 'Session ID / Batch ID'}
                 </label>
                 <input
                   id="join-session"
                   type="text"
-                  placeholder="e.g. training-june-03"
+                  placeholder="e.g. sales-batch-12"
                   value={joinSession}
                   onChange={(e) => setJoinSession(e.target.value)}
-                  readOnly={!!pathSession}
-                  className={pathSession ? 'is-readonly' : ''}
+                  readOnly={isStudentJoin}
+                  required={!isStudentJoin}
+                  className={isStudentJoin ? 'is-readonly' : ''}
                 />
                 <span className="auth-field-hint">
-                  Leave blank for your personal board, or enter a name to join a session.
+                  {isStudentJoin
+                    ? 'You are joining via a trainer share link.'
+                    : 'Required. New ID creates a board; existing ID opens that batch board.'}
                 </span>
               </div>
+
+              {formError ? <p className="auth-form-error">{formError}</p> : null}
 
               <button type="submit" className="auth-submit" disabled={loading}>
                 {ctaLabel}

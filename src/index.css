@@ -3443,6 +3443,16 @@ body.tool-eraser #eraser-cursor{display:block}
   background:rgba(251,251,251,0.02);
 }
 .auth-field-hint{font-size:12px;color:var(--ui-text3);line-height:1.45}
+.auth-form-error{
+  margin:0;
+  padding:10px 12px;
+  border-radius:10px;
+  background:rgba(242,84,29,0.12);
+  border:1px solid rgba(242,84,29,0.35);
+  color:#ffb4a2;
+  font-size:13px;
+  line-height:1.4;
+}
 .auth-submit{
   margin-top:4px;
   width:100%;

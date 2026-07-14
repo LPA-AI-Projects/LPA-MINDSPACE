@@ -547,9 +547,42 @@ function positionFloatingPanel(el, { anchorRect, excludeIds = [] }) {
     { top: anchorRect.bottom + FLOAT_UI_GAP, left: anchorRect.right - width },
     { top: anchorRect.top - height - FLOAT_UI_GAP, left: anchorRect.left },
   ];
-  const pos = positionRectAvoidingUi(width, height, candidates, excludeIds);
-  el.style.top = `${pos.top}px`;
-  el.style.left = `${pos.left}px`;
+  // Treat the anchored object itself as an obstacle so the panel never covers it
+  const obstacles = [
+    ...getFloatingUiObstacleRects(excludeIds),
+    {
+      top: anchorRect.top,
+      left: anchorRect.left,
+      right: anchorRect.right,
+      bottom: anchorRect.bottom,
+    },
+  ];
+  let placed = null;
+  for (const candidate of candidates) {
+    const pos = clampFloatingPanelPos(candidate.top, candidate.left, width, height);
+    const rect = {
+      top: pos.top,
+      left: pos.left,
+      right: pos.left + width,
+      bottom: pos.top + height,
+    };
+    if (!obstacles.some((o) => floatingRectsOverlap(rect, o))) {
+      placed = { top: Math.round(pos.top), left: Math.round(pos.left) };
+      break;
+    }
+  }
+  if (!placed) {
+    // Prefer above when falling back so growing text downward stays readable
+    const fallback = clampFloatingPanelPos(
+      anchorRect.top - height - FLOAT_UI_GAP,
+      centerLeft,
+      width,
+      height
+    );
+    placed = { top: Math.round(fallback.top), left: Math.round(fallback.left) };
+  }
+  el.style.top = `${placed.top}px`;
+  el.style.left = `${placed.left}px`;
 }
 
 function getActiveSelectionToolbarEl() {
@@ -1682,6 +1715,74 @@ function getTextEditable(wrap) {
   return wrap?.querySelector('div');
 }
 
+let canvasTextMeasureEl = null;
+function getCanvasTextMeasureEl() {
+  if (!canvasTextMeasureEl) {
+    canvasTextMeasureEl = document.createElement('div');
+    canvasTextMeasureEl.setAttribute('aria-hidden', 'true');
+    canvasTextMeasureEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none;box-sizing:content-box;padding:0;border:0;margin:0;';
+    document.body.appendChild(canvasTextMeasureEl);
+  }
+  return canvasTextMeasureEl;
+}
+
+function getCanvasTextContent(editable) {
+  return (editable.innerText ?? editable.textContent ?? '').replace(/\r\n/g, '\n');
+}
+
+function syncCanvasTextMeasureStyles(measure, editable) {
+  const cs = window.getComputedStyle(editable);
+  measure.style.fontFamily = cs.fontFamily;
+  measure.style.fontSize = cs.fontSize;
+  measure.style.fontWeight = cs.fontWeight;
+  measure.style.fontStyle = cs.fontStyle;
+  measure.style.letterSpacing = cs.letterSpacing;
+  measure.style.textTransform = cs.textTransform;
+  measure.style.lineHeight = cs.lineHeight;
+  measure.style.textAlign = 'left';
+}
+
+function measureCanvasTextBox(editable, boxWidth) {
+  const measure = getCanvasTextMeasureEl();
+  const content = getCanvasTextContent(editable);
+  const hasNewline = content.includes('\n');
+  syncCanvasTextMeasureStyles(measure, editable);
+
+  if (!hasNewline) {
+    measure.style.whiteSpace = 'nowrap';
+    measure.style.width = 'auto';
+    measure.textContent = content || '\u200b';
+    return {
+      content,
+      hasNewline,
+      width: measure.offsetWidth,
+      height: measure.offsetHeight,
+    };
+  }
+
+  const lines = content.split('\n');
+  measure.style.whiteSpace = 'nowrap';
+  measure.style.width = 'auto';
+  let maxLineW = 0;
+  lines.forEach((line) => {
+    measure.textContent = line || '\u200b';
+    maxLineW = Math.max(maxLineW, measure.offsetWidth);
+  });
+
+  const wrapContentW = Number.isFinite(boxWidth) && boxWidth > 0
+    ? Math.max(maxLineW, boxWidth)
+    : maxLineW;
+  measure.style.whiteSpace = 'pre-wrap';
+  measure.style.width = `${Math.max(1, wrapContentW)}px`;
+  measure.textContent = content;
+  return {
+    content,
+    hasNewline,
+    width: Math.max(maxLineW, wrapContentW),
+    height: measure.offsetHeight,
+  };
+}
+
 function placeCaretAtEnd(editable) {
   if (!editable) return;
   const range = document.createRange();
@@ -1724,7 +1825,7 @@ function finishTextEditing(wrap, obj, editable) {
     ? '1.5px solid #2e9d91'
     : '1.5px solid transparent';
   fitCanvasTextBoxToContent(wrap, obj);
-  const newText = editable.textContent;
+  const newText = getCanvasTextContent(editable);
   if (newText !== obj.content) {
     obj.content = newText;
     History.push();
@@ -1738,38 +1839,56 @@ function fitCanvasTextBoxToContent(wrap, obj) {
 
   const minW = 60;
   const fontSize = obj.fontSize || 18;
-  const minH = Math.max(24, Math.ceil(fontSize * 1.5) + 6);
+  const padX = 12;
   const padY = 6;
+  const minH = Math.max(24, Math.ceil(fontSize * 1.5) + padY);
+  const prevW = obj.w || wrap.offsetWidth || 0;
+  const prevContentW = Math.max(0, prevW - padX);
+  const hasNewline = getCanvasTextContent(editable).includes('\n');
+  const { width: textW, height: textH } = measureCanvasTextBox(
+    editable,
+    hasNewline ? prevContentW : null
+  );
 
-  const prevOverflow = wrap.style.overflow;
-  let measureW = obj.w || wrap.offsetWidth || 120;
-  wrap.style.overflow = 'hidden';
-  wrap.style.width = `${measureW}px`;
+  editable.style.whiteSpace = hasNewline ? 'pre-wrap' : 'nowrap';
+  editable.style.wordBreak = hasNewline ? 'break-word' : 'normal';
+  editable.style.display = 'block';
+  editable.style.width = '100%';
+  editable.style.height = 'auto';
+  editable.style.margin = '0';
+  editable.style.padding = '0';
+  wrap.style.whiteSpace = hasNewline ? 'pre-wrap' : 'nowrap';
+  wrap.style.wordBreak = hasNewline ? 'break-word' : 'normal';
+
+  let neededW = Math.max(minW, Math.ceil(textW) + padX);
+  if (hasNewline && prevW > 0) neededW = Math.max(neededW, prevW);
+
+  wrap.style.minWidth = '0';
+  wrap.style.minHeight = '0';
+  wrap.style.width = `${neededW}px`;
   wrap.style.height = 'auto';
 
-  let neededW = measureW;
-  let neededH = Math.max(minH, editable.scrollHeight + padY);
+  const contentH = Math.max(Math.ceil(textH), editable.scrollHeight);
+  const neededH = Math.max(minH, contentH + padY);
 
-  if (editable.scrollWidth > editable.clientWidth + 1) {
-    wrap.style.width = 'auto';
-    neededW = Math.max(minW, wrap.offsetWidth);
-    wrap.style.width = `${neededW}px`;
-    neededH = Math.max(minH, editable.scrollHeight + padY);
-  } else if (!(editable.textContent || '').includes('\n')) {
-    wrap.style.width = 'auto';
-    const autoW = Math.max(minW, wrap.offsetWidth);
-    if (autoW > measureW) {
-      neededW = autoW;
-      wrap.style.width = `${neededW}px`;
-      neededH = Math.max(minH, editable.scrollHeight + padY);
-    }
+  obj.w = neededW;
+  obj.h = neededH;
+  wrap.style.height = `${neededH}px`;
+  wrap.style.top = `${obj.y}px`;
+
+  // Keep formatting toolbar clear of the box as it grows (e.g. after Enter)
+  const tb = document.getElementById('text-toolbar');
+  if (tb?.classList.contains('visible') && (selectedTextId === obj.id || wrap.classList.contains('is-editing'))) {
+    requestAnimationFrame(() => {
+      if (!wrap.isConnected) return;
+      positionFloatingPanel(tb, {
+        anchorRect: wrap.getBoundingClientRect(),
+        excludeIds: ['text-toolbar'],
+      });
+      repositionOpenTtbMenu();
+      repositionSelectionAiPopup();
+    });
   }
-
-  obj.w = Math.max(obj.w || 0, neededW, minW);
-  obj.h = Math.max(obj.h || 0, neededH);
-  wrap.style.width = `${obj.w}px`;
-  wrap.style.height = `${obj.h}px`;
-  wrap.style.overflow = prevOverflow || 'hidden';
 }
 
 function beginTextEditing(wrap, obj, opts = {}) {
@@ -1796,6 +1915,7 @@ function beginTextEditing(wrap, obj, opts = {}) {
   } else {
     placeCaretAtEnd(editable);
   }
+  fitCanvasTextBoxToContent(wrap, obj);
 }
 
 function endActiveTextEdit() {
@@ -1841,7 +1961,7 @@ function addTextToCanvas(obj) {
   wrap.style.cssText = `
     position:absolute;
     left:${obj.x}px; top:${obj.y}px;
-    ${hasSize ? `width:${obj.w}px;height:${obj.h}px;` : 'min-width:120px;min-height:28px;'}
+    ${hasSize ? `width:${obj.w}px;height:${obj.h}px;` : 'min-width:0;min-height:0;'}
     font-family:${fontFamily};
     font-size:${obj.fontSize||18}px;
     font-weight:${obj.fontWeight||'500'};
@@ -1851,7 +1971,7 @@ function addTextToCanvas(obj) {
     color:${obj.color||'#141414'};
     background:${highlight};
     border:1.5px solid transparent;
-    outline:none; overflow:hidden;
+    outline:none;
     padding:3px 6px; cursor:text; z-index:10;
     box-sizing:border-box;
   `;
@@ -1859,7 +1979,7 @@ function addTextToCanvas(obj) {
   // inner editable — not editable until double-clicked
   const editable = document.createElement('div');
   editable.contentEditable = 'false';
-  editable.style.cssText = `outline:none;width:100%;height:100%;min-height:1em;word-break:break-word;white-space:pre-wrap;pointer-events:none;text-align:${textAlign};`;
+  editable.style.cssText = `outline:none;width:100%;height:auto;min-height:1em;white-space:nowrap;word-break:normal;pointer-events:none;text-align:${textAlign};`;
   editable.textContent = obj.content || '';
   wrap.appendChild(editable);
 
@@ -1936,14 +2056,27 @@ function addTextToCanvas(obj) {
     finishTextEditing(wrap, obj, editable);
   });
 
+  editable.addEventListener('input', () => {
+    fitCanvasTextBoxToContent(wrap, obj);
+  });
+  editable.addEventListener('keyup', () => {
+    fitCanvasTextBoxToContent(wrap, obj);
+  });
+
   editable.addEventListener('keydown', ev => {
     if (ev.key === 'Escape') { editable.blur(); ev.preventDefault(); }
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      document.execCommand('insertLineBreak');
+      requestAnimationFrame(() => fitCanvasTextBoxToContent(wrap, obj));
+    }
     ev.stopPropagation();
   });
   editable.addEventListener('keyup', ev => ev.stopPropagation());
   editable.addEventListener('mousedown', ev => ev.stopPropagation());
 
   canvasWorld.appendChild(wrap);
+  if (obj.content) fitCanvasTextBoxToContent(wrap, obj);
   return wrap;
 }
 
@@ -6455,9 +6588,9 @@ function applyTextStyle(prop, value) {
   if (prop === 'highlight') value = normalizeTextHighlight(value);
   obj[prop] = value;
   if (prop === 'fontSize')        { el.style.fontSize = value + 'px'; fitCanvasTextBoxToContent(el, obj); }
-  if (prop === 'fontWeight')      { el.style.fontWeight = value; }
+  if (prop === 'fontWeight')      { el.style.fontWeight = value; fitCanvasTextBoxToContent(el, obj); }
   if (prop === 'fontStyle')       { el.style.fontStyle = value; }
-  if (prop === 'fontFamily')      { el.style.fontFamily = value; }
+  if (prop === 'fontFamily')      { el.style.fontFamily = value; fitCanvasTextBoxToContent(el, obj); }
   if (prop === 'textAlign')       { el.style.textAlign = value; if (editable) editable.style.textAlign = value; }
   if (prop === 'textDecoration')  { el.style.textDecoration = value; }
   if (prop === 'color')           { el.style.color = value; }

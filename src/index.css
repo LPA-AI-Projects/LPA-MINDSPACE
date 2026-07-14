@@ -1393,15 +1393,23 @@ body.tool-eraser #eraser-cursor{display:block}
 /* selected text node gets a visible border */
 .canvas-text {
   position: absolute;
-  overflow: hidden; /* clip text to box */
-  word-break: break-word;
-  white-space: pre-wrap;
+  overflow: hidden;
+  white-space: nowrap;
+  word-break: normal;
   line-height: 1.5;
   border-radius: 3px;
   padding: 3px 6px;
   cursor: text;
   z-index: 10;
   box-sizing: border-box;
+}
+.canvas-text > div {
+  margin: 0;
+  padding: 0;
+}
+.canvas-text.sel-active,
+.canvas-text.is-editing {
+  overflow: visible;
 }
 /* text resize handle */
 .text-resize-handle {

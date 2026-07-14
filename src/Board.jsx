@@ -79,6 +79,21 @@ async function loadSessionScopedBoard(sessionId, userId, userEmail) {
     }
 
     let sessionRow = sessionRowInitial;
+
+    // Students joining via share link often can't see the row under strict RLS yet.
+    // Use security-definer RPC so an authenticated user can resolve the session by ID.
+    if (!sessionRow) {
+      const { data: lookedUp, error: lookupError } = await supabase.rpc(
+        'lookup_session_for_join',
+        { p_session_id: sessionId },
+      );
+      if (lookupError) {
+        logSessionError('lookup session rpc', lookupError);
+      } else {
+        sessionRow = Array.isArray(lookedUp) ? lookedUp[0] : lookedUp;
+      }
+    }
+
     let createdNow = false;
 
     // Only the shared trainer account that just logged in with this Batch ID may create.

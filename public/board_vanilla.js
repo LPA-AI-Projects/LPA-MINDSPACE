@@ -3062,6 +3062,19 @@ function cloneBoardStateSnapshot(source) {
   return JSON.parse(JSON.stringify(source || getCurrentBoardState()));
 }
 
+/** Compare shared board content only (ignore per-user camera). */
+function boardContentSignature(boardState) {
+  try {
+    return JSON.stringify({
+      boardName: boardState?.boardName || '',
+      objects: boardState?.objects || [],
+      sharing: boardState?.sharing || null,
+    });
+  } catch (_e) {
+    return '';
+  }
+}
+
 const BOARD_IMAGES_BUCKET = 'board-images';
 
 function isInlineImageSrc(src) {
@@ -3152,14 +3165,12 @@ function sanitizeSnapshotForSync(snapshot) {
 
 function applyRemoteBoardState(remoteState, sourceLabel) {
   if (!remoteState || typeof remoteState !== 'object') return;
-  let currentSerialized = '';
-  let remoteSerialized = '';
-  try {
-    currentSerialized = serializeCurrentBoardState();
-    remoteSerialized = JSON.stringify(remoteState);
-  } catch (_e) {
-    return;
-  }
+  const currentSerialized = boardContentSignature({
+    boardName: state.boardName,
+    objects: state.objects,
+    sharing: state.sharing,
+  });
+  const remoteSerialized = boardContentSignature(remoteState);
   if (!remoteSerialized || remoteSerialized === currentSerialized) return;
 
   const previousObjects = state.objects || [];
@@ -3178,12 +3189,8 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   );
 
   state.boardName = remoteState.boardName || state.boardName || 'LP MindSpace';
-  const remoteViewportOk = isViewportSane(remoteState.panX, remoteState.panY, remoteState.zoom);
-  if (remoteViewportOk) {
-    state.panX = remoteState.panX;
-    state.panY = remoteState.panY;
-    state.zoom = clampZoom(remoteState.zoom);
-  }
+  // Viewport is per-user. Never steal pan/zoom from remote board sync.
+  // Follow mode uses presence payloads separately (applyFollowViewportIfNeeded).
   state.objects = hydrateObjectsList([...mergedRemoteList, ...localImagesMissingFromRemote]);
   state.sharing = remoteState.sharing || null;
 
@@ -3192,7 +3199,7 @@ function applyRemoteBoardState(remoteState, sourceLabel) {
   document.title = state.boardName + ' — LP MindSpace';
   applyTransform();
   redrawAll();
-  if (!remoteViewportOk) {
+  if (!isViewportSane(state.panX, state.panY, state.zoom)) {
     repairViewportAfterLoad({ persist: sourceLabel === 'latest', toast: sourceLabel === 'latest' });
   }
   updateObjectCount();
@@ -3409,13 +3416,8 @@ function buildBoardOps(previousState, nextState) {
     if (JSON.stringify(prevObj) !== JSON.stringify(obj)) ops.push({ t: 'upsert', obj });
   });
 
-  const viewportChanged =
-    previousState?.panX !== nextState?.panX ||
-    previousState?.panY !== nextState?.panY ||
-    previousState?.zoom !== nextState?.zoom;
-  if (viewportChanged) {
-    ops.push({ t: 'viewport', panX: nextState.panX, panY: nextState.panY, zoom: nextState.zoom });
-  }
+  // Do not sync viewport (pan/zoom) — each user keeps an independent camera.
+  // Follow mode uses collab presence, not board ops.
 
   if ((previousState?.boardName || '') !== (nextState?.boardName || '')) {
     ops.push({ t: 'boardName', boardName: nextState.boardName || 'LP MindSpace' });
@@ -3457,10 +3459,7 @@ function applyRemoteBoardOps(ops, meta = {}) {
       return;
     }
     if (op.t === 'viewport') {
-      state.panX = Number.isFinite(op.panX) ? op.panX : state.panX;
-      state.panY = Number.isFinite(op.panY) ? op.panY : state.panY;
-      state.zoom = Number.isFinite(op.zoom) ? op.zoom : state.zoom;
-      changed = true;
+      // Ignore legacy viewport ops from older clients — camera is local-only.
       return;
     }
     if (op.t === 'boardName') {

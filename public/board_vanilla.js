@@ -258,6 +258,8 @@ let activityPanelRefreshTimer = null;
 let activityRosterChannel = null;
 let lastPresenceCursorX = null;
 let lastPresenceCursorY = null;
+let lastPresenceScreenX = null;
+let lastPresenceScreenY = null;
 let viewportPresenceTimer = null;
 
 function canEditBoardNow() {
@@ -405,6 +407,8 @@ function applyTransform() {
   if (stampLayer) {
     stampLayer.style.setProperty('--stamp-zoom-compensate', String(1 / Math.max(state.zoom, ZOOM_MIN)));
   }
+  // Keep remote cursors glued to board content as this user pans/zooms.
+  if (typeof renderPresence === 'function') renderPresence();
 }
 
 function updateGrid() {
@@ -2654,12 +2658,47 @@ function renderActivityPanel() {
   }).join('');
 }
 
-function navigateToScreenPoint(sx, sy) {
-  const wx = (sx - state.panX) / state.zoom;
-  const wy = (sy - state.panY) / state.zoom;
+function navigateToWorldPoint(wx, wy) {
+  if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
   state.panX = window.innerWidth / 2 - wx * state.zoom;
   state.panY = window.innerHeight / 2 - wy * state.zoom;
   applyTransform();
+}
+
+function navigateToScreenPoint(sx, sy) {
+  const wp = screenToWorld(sx, sy);
+  navigateToWorldPoint(wp.x, wp.y);
+}
+
+function resolveRemoteWorldCursor(clientOrPayload) {
+  if (!clientOrPayload) return null;
+  if (Number.isFinite(clientOrPayload.worldX) && Number.isFinite(clientOrPayload.worldY)) {
+    return { x: clientOrPayload.worldX, y: clientOrPayload.worldY };
+  }
+  // Legacy payloads sent screen pixels; convert with that client's viewport if present.
+  if (
+    Number.isFinite(clientOrPayload.cursorX)
+    && Number.isFinite(clientOrPayload.cursorY)
+    && Number.isFinite(clientOrPayload.panX)
+    && Number.isFinite(clientOrPayload.panY)
+    && Number.isFinite(clientOrPayload.zoom)
+    && clientOrPayload.zoom > 0
+    && clientOrPayload.cursorSpace !== 'world'
+  ) {
+    return {
+      x: (clientOrPayload.cursorX - clientOrPayload.panX) / clientOrPayload.zoom,
+      y: (clientOrPayload.cursorY - clientOrPayload.panY) / clientOrPayload.zoom,
+    };
+  }
+  // Current protocol: cursorX/Y are world coords.
+  if (
+    Number.isFinite(clientOrPayload.cursorX)
+    && Number.isFinite(clientOrPayload.cursorY)
+    && (clientOrPayload.cursorSpace === 'world' || clientOrPayload.worldCursor === true)
+  ) {
+    return { x: clientOrPayload.cursorX, y: clientOrPayload.cursorY };
+  }
+  return null;
 }
 
 function navigateToParticipantViewport(client) {
@@ -2671,8 +2710,9 @@ function navigateToParticipantViewport(client) {
     applyTransform();
     return true;
   }
-  if (Number.isFinite(client.cursorX) && Number.isFinite(client.cursorY)) {
-    navigateToScreenPoint(client.cursorX, client.cursorY);
+  const world = resolveRemoteWorldCursor(client);
+  if (world) {
+    navigateToWorldPoint(world.x, world.y);
     return true;
   }
   return false;
@@ -2756,16 +2796,15 @@ function applyFollowViewportIfNeeded() {
     applyTransform();
     return;
   }
-  if (Number.isFinite(client.cursorX) && Number.isFinite(client.cursorY)) {
-    navigateToScreenPoint(client.cursorX, client.cursorY);
-  }
+  const world = resolveRemoteWorldCursor(client);
+  if (world) navigateToWorldPoint(world.x, world.y);
 }
 
 function scheduleViewportPresencePublish() {
   if (viewportPresenceTimer) return;
   viewportPresenceTimer = setTimeout(() => {
     viewportPresenceTimer = null;
-    publishCollabPresence(lastPresenceCursorX, lastPresenceCursorY);
+    publishCollabPresence();
   }, 350);
 }
 
@@ -3260,13 +3299,18 @@ function initRealtimeBoardSync() {
   });
   boardSyncChannel.on('broadcast', { event: 'collab_presence' }, ({ payload }) => {
     if (!payload || payload.clientId === realtimeClientId) return;
+    const world = resolveRemoteWorldCursor(payload);
     remoteCollabClients.set(payload.clientId, {
       clientId: payload.clientId,
       userId: payload.userId,
       name: payload.name || 'User',
       color: payload.color || userColorFromId(payload.clientId),
-      cursorX: payload.cursorX,
-      cursorY: payload.cursorY,
+      worldX: world?.x ?? null,
+      worldY: world?.y ?? null,
+      cursorX: world?.x ?? null,
+      cursorY: world?.y ?? null,
+      cursorSpace: 'world',
+      worldCursor: true,
       panX: payload.panX,
       panY: payload.panY,
       zoom: payload.zoom,
@@ -3318,9 +3362,9 @@ function initRealtimeBoardSync() {
     if (status === 'SUBSCRIBED') {
       pullLatestBoardStateFromSupabase();
       requestRealtimeResync();
-      publishCollabPresence(null, null);
+      publishCollabPresence();
       if (collabPresenceHeartbeat) clearInterval(collabPresenceHeartbeat);
-      collabPresenceHeartbeat = setInterval(() => publishCollabPresence(lastPresenceCursorX, lastPresenceCursorY), 4000);
+      collabPresenceHeartbeat = setInterval(() => publishCollabPresence(), 4000);
     }
   });
 }
@@ -3332,9 +3376,17 @@ function pruneStaleCollabClients() {
   });
 }
 
-function publishCollabPresence(cursorX, cursorY) {
+function publishCollabPresence() {
   if (!boardSyncChannel || !boardSyncChannelReady) return;
   const access = window.boardAccess || boardAccess;
+  // Recompute world from last screen point so pan/zoom keep the cursor accurate.
+  if (Number.isFinite(lastPresenceScreenX) && Number.isFinite(lastPresenceScreenY)) {
+    const wp = screenToWorld(lastPresenceScreenX, lastPresenceScreenY);
+    lastPresenceCursorX = wp.x;
+    lastPresenceCursorY = wp.y;
+  }
+  const worldX = Number.isFinite(lastPresenceCursorX) ? lastPresenceCursorX : null;
+  const worldY = Number.isFinite(lastPresenceCursorY) ? lastPresenceCursorY : null;
   boardSyncChannel.send({
     type: 'broadcast',
     event: 'collab_presence',
@@ -3343,8 +3395,12 @@ function publishCollabPresence(cursorX, cursorY) {
       userId: access.userId,
       name: access.userName || access.userEmail || 'User',
       color: userColorFromId(realtimeClientId),
-      cursorX: Number.isFinite(cursorX) ? cursorX : null,
-      cursorY: Number.isFinite(cursorY) ? cursorY : null,
+      worldX,
+      worldY,
+      cursorX: worldX,
+      cursorY: worldY,
+      cursorSpace: 'world',
+      worldCursor: true,
       panX: state.panX,
       panY: state.panY,
       zoom: state.zoom,
@@ -3576,14 +3632,23 @@ function userColorFromId(id) {
   return palette[hash % palette.length];
 }
 
-function buildPresencePayload(cursorX = null, cursorY = null) {
+function buildPresencePayload() {
+  if (Number.isFinite(lastPresenceScreenX) && Number.isFinite(lastPresenceScreenY)) {
+    const wp = screenToWorld(lastPresenceScreenX, lastPresenceScreenY);
+    lastPresenceCursorX = wp.x;
+    lastPresenceCursorY = wp.y;
+  }
   return {
     clientId: realtimeClientId,
     userId: boardAccess.userId,
     name: boardAccess.userName || boardAccess.userEmail || 'User',
     color: userColorFromId(realtimeClientId),
-    cursorX,
-    cursorY,
+    worldX: Number.isFinite(lastPresenceCursorX) ? lastPresenceCursorX : null,
+    worldY: Number.isFinite(lastPresenceCursorY) ? lastPresenceCursorY : null,
+    cursorX: Number.isFinite(lastPresenceCursorX) ? lastPresenceCursorX : null,
+    cursorY: Number.isFinite(lastPresenceCursorY) ? lastPresenceCursorY : null,
+    cursorSpace: 'world',
+    worldCursor: true,
     panX: state.panX,
     panY: state.panY,
     zoom: state.zoom,
@@ -3610,14 +3675,31 @@ function renderPresence() {
     </div>
   `).join('');
 
+  const margin = 40;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
   layer.innerHTML = others
-    .filter((u) => Number.isFinite(u.cursorX) && Number.isFinite(u.cursorY))
-    .map((u) => `
-      <div class="presence-cursor" data-client-id="${u.clientId}" style="left:${u.cursorX}px;top:${u.cursorY}px">
+    .map((u) => {
+      const world = resolveRemoteWorldCursor(u);
+      if (!world) return '';
+      const screen = worldToScreen(world.x, world.y);
+      // Only show cursors that land in (or near) this user's current viewport.
+      if (
+        screen.x < -margin
+        || screen.y < -margin
+        || screen.x > vw + margin
+        || screen.y > vh + margin
+      ) {
+        return '';
+      }
+      return `
+      <div class="presence-cursor" data-client-id="${u.clientId}" style="left:${screen.x}px;top:${screen.y}px">
         <div class="presence-cursor-dot" style="background:${u.color}"></div>
-        <div class="presence-cursor-label" style="background:${u.color}">${u.name}</div>
-      </div>
-    `).join('');
+        <div class="presence-cursor-label" style="background:${u.color}">${escapeHtml(u.name || 'User')}</div>
+      </div>`;
+    })
+    .filter(Boolean)
+    .join('');
   if (activityPanelOpen) renderActivityPanel();
 }
 
@@ -3670,12 +3752,15 @@ function initRealtimePresence() {
 let presenceMoveTimer = null;
 document.addEventListener('mousemove', (ev) => {
   if (presenceMoveTimer) return;
-  lastPresenceCursorX = ev.clientX;
-  lastPresenceCursorY = ev.clientY;
+  lastPresenceScreenX = ev.clientX;
+  lastPresenceScreenY = ev.clientY;
+  const wp = screenToWorld(ev.clientX, ev.clientY);
+  lastPresenceCursorX = wp.x;
+  lastPresenceCursorY = wp.y;
   presenceMoveTimer = setTimeout(() => {
     presenceMoveTimer = null;
-    publishCollabPresence(ev.clientX, ev.clientY);
-    if (presenceChannel) presenceChannel.track(buildPresencePayload(ev.clientX, ev.clientY));
+    publishCollabPresence();
+    if (presenceChannel) presenceChannel.track(buildPresencePayload());
   }, 70);
 });
 

@@ -87,7 +87,7 @@ function bindBoardDom() {
 
 const UI_CHROME_SELECTOR =
   '#board-bar-left, #board-bar-right, #viewport-return-banner, #toolbar, #zoom-panel, #share-dialog, #activity-panel, #export-menu, ' +
-  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, #sticky-toolbar, ' +
+  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, #sticky-toolbar, #sticky-flow-picker, ' +
   '#shortcuts-overlay, #board-info-panel, #about-panel, #panel-backdrop, #minimap-wrap, ' +
   '#ctx-menu, #shape-convert-popup, #sticky-color-picker, #sel-ai-popup, #export-progress, #ai-loading';
 
@@ -780,6 +780,9 @@ function setTool(tool) {
   const shapePicker = document.getElementById('shape-picker');
   if (shapePicker) shapePicker.classList.toggle('visible', tool === 'shape');
   if (tool !== 'shape') toggleShapeMorePanel(false);
+
+  const stickyFlowPicker = document.getElementById('sticky-flow-picker');
+  if (stickyFlowPicker) stickyFlowPicker.classList.toggle('visible', tool === 'sticky');
 
   // show/hide pen toolbar
   const penToolbar = document.getElementById('pen-toolbar');
@@ -4562,6 +4565,7 @@ function endShapeDraw(e) {
       x, y, w, h,
       fill: '#fbfbfb', stroke: '#141414', strokeWidth: 1.5,
       label: '',
+      flowArrow: currentShapeFlowArrow === 'all' ? 'none' : normalizeFlowArrow(currentShapeFlowArrow),
     };
   }
 
@@ -4911,12 +4915,200 @@ function renderShapeMoreGrid() {
   });
 }
 
+// ═══════════════════════════════════════════════════
+// WORKFLOW FLOW ARROWS (stickies + shapes)
+// ═══════════════════════════════════════════════════
+const FLOW_ARROW_DIRS = ['right', 'left', 'top', 'bottom'];
+let currentStickyFlowArrow = 'none';
+let currentShapeFlowArrow = 'none';
+
+const FLOW_ARROW_OPTIONS = [
+  {
+    id: 'none',
+    tip: 'No arrow',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="4" y="5" width="10" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  },
+  {
+    id: 'right',
+    tip: 'Right arrow',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="1.5" y="5" width="7" height="8" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M9.5 9h6M13.5 6.5L16 9l-2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+  {
+    id: 'left',
+    tip: 'Left arrow',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="9.5" y="5" width="7" height="8" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M8.5 9H2.5M4.5 6.5L2 9l2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+  {
+    id: 'top',
+    tip: 'Top arrow',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="5" y="9.5" width="8" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M9 8.5V2.5M6.5 4.5L9 2l2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+  {
+    id: 'bottom',
+    tip: 'Bottom arrow',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="5" y="1.5" width="8" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M9 9.5v6M6.5 13.5L9 16l2.5-2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+  {
+    id: 'all',
+    tip: 'All sides',
+    icon: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="5.5" y="5.5" width="7" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M9 5V2M9 16v-3M5 9H2M16 9h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7.5 3.2L9 1.8l1.5 1.4M7.5 14.8L9 16.2l1.5-1.4M3.2 7.5L1.8 9l1.4 1.5M14.8 7.5L16.2 9l-1.4 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+];
+
+function normalizeFlowArrow(value) {
+  if (!value || value === 'none') return 'none';
+  if (value === 'all') return 'all';
+  return FLOW_ARROW_DIRS.includes(value) ? value : 'none';
+}
+
+function flowArrowDirsList(flowArrow) {
+  const v = normalizeFlowArrow(flowArrow);
+  if (v === 'none') return [];
+  if (v === 'all') return [...FLOW_ARROW_DIRS];
+  return [v];
+}
+
+function flowArrowShaftSvg(dir) {
+  if (dir === 'right') {
+    return `<svg class="flow-arrow-shaft" width="36" height="16" viewBox="0 0 36 16" fill="none" aria-hidden="true"><path d="M2 8h26M22 3l9 5-9 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (dir === 'left') {
+    return `<svg class="flow-arrow-shaft" width="36" height="16" viewBox="0 0 36 16" fill="none" aria-hidden="true"><path d="M34 8H8M14 3L5 8l9 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (dir === 'top') {
+    return `<svg class="flow-arrow-shaft" width="16" height="36" viewBox="0 0 16 36" fill="none" aria-hidden="true"><path d="M8 34V8M3 14L8 5l5 9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  return `<svg class="flow-arrow-shaft" width="16" height="36" viewBox="0 0 16 36" fill="none" aria-hidden="true"><path d="M8 2v26M3 22l5 9 5-9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function attachFlowArrows(el, obj, options = {}) {
+  if (!el || !obj) return;
+  el.querySelector('.flow-arrow-layer')?.remove();
+  const dirs = flowArrowDirsList(obj.flowArrow);
+  if (!dirs.length) return;
+
+  const layer = document.createElement('div');
+  layer.className = 'flow-arrow-layer';
+  dirs.forEach((dir) => {
+    const wrap = document.createElement('div');
+    wrap.className = `flow-arrow flow-arrow--${dir}`;
+    wrap.innerHTML = flowArrowShaftSvg(dir);
+    if (options.chainable) {
+      const plus = document.createElement('button');
+      plus.type = 'button';
+      plus.className = 'flow-arrow-plus';
+      plus.title = 'Add next step';
+      plus.setAttribute('aria-label', `Add sticky ${dir}`);
+      plus.textContent = '+';
+      plus.addEventListener('mousedown', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+      });
+      plus.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        if (!guardEditObject(obj)) return;
+        chainStickyFromFlowArrow(obj, dir);
+      });
+      wrap.appendChild(plus);
+    }
+    layer.appendChild(wrap);
+  });
+  el.appendChild(layer);
+}
+
+function chainStickyFromFlowArrow(sourceObj, dir) {
+  if (!sourceObj || sourceObj.type !== 'sticky') return;
+  if (!guardEditObject(sourceObj)) return;
+  const W = sourceObj.w || 220;
+  const H = sourceObj.h || 180;
+  const GAP = 72;
+  let x = sourceObj.x;
+  let y = sourceObj.y;
+  if (dir === 'right') x = sourceObj.x + (sourceObj.w || W) + GAP;
+  if (dir === 'left') x = sourceObj.x - W - GAP;
+  if (dir === 'bottom') y = sourceObj.y + (sourceObj.h || H) + GAP;
+  if (dir === 'top') y = sourceObj.y - H - GAP;
+
+  const nextFlow = normalizeFlowArrow(sourceObj.flowArrow) === 'all' ? 'all' : dir;
+  const obj = stampOwner({
+    id: uid(),
+    type: 'sticky',
+    x,
+    y,
+    w: W,
+    h: H,
+    color: sourceObj.color || stickyLastColor,
+    text: '',
+    zIndex: nextZIndex(),
+    flowArrow: nextFlow,
+    ...DEFAULT_STICKY_TEXT,
+    fontFamily: sourceObj.fontFamily || DEFAULT_STICKY_TEXT.fontFamily,
+    fontSize: sourceObj.fontSize || DEFAULT_STICKY_TEXT.fontSize,
+    fontWeight: sourceObj.fontWeight || DEFAULT_STICKY_TEXT.fontWeight,
+    fontStyle: sourceObj.fontStyle || DEFAULT_STICKY_TEXT.fontStyle,
+    textAlign: sourceObj.textAlign || DEFAULT_STICKY_TEXT.textAlign,
+    textDecoration: sourceObj.textDecoration || DEFAULT_STICKY_TEXT.textDecoration,
+    textColor: sourceObj.textColor || DEFAULT_STICKY_TEXT.textColor,
+    highlight: sourceObj.highlight || DEFAULT_STICKY_TEXT.highlight,
+  });
+  ensureStickyTextDefaults(obj);
+  state.objects.push(obj);
+  updateObjectCount();
+  const el = renderStickyFromObj(obj);
+  selectObject(obj.id, false);
+  setTimeout(() => {
+    const ta = el.querySelector('.sticky-text');
+    if (ta) ta.focus();
+  }, 40);
+  History.push();
+  saveToStorage();
+  showToast('Next sticky added');
+}
+
+function buildStickyFlowPicker() {
+  const picker = document.getElementById('sticky-flow-picker');
+  if (!picker) return;
+  picker.innerHTML = '';
+  const label = document.createElement('div');
+  label.className = 'sticky-flow-label';
+  label.textContent = 'Sticky style';
+  picker.appendChild(label);
+  const row = document.createElement('div');
+  row.id = 'sticky-flow-row';
+  FLOW_ARROW_OPTIONS.forEach((opt) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sf-btn' + (currentStickyFlowArrow === opt.id ? ' active' : '');
+    btn.dataset.flow = opt.id;
+    btn.dataset.tip = opt.tip;
+    btn.setAttribute('aria-label', opt.tip);
+    btn.innerHTML = opt.icon;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setStickyFlowArrow(opt.id);
+    });
+    row.appendChild(btn);
+  });
+  picker.appendChild(row);
+}
+
+function setStickyFlowArrow(dir) {
+  currentStickyFlowArrow = normalizeFlowArrow(dir);
+  document.querySelectorAll('#sticky-flow-row .sf-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.flow === currentStickyFlowArrow);
+  });
+}
+
 function buildShapePicker() {
   const picker = document.getElementById('shape-picker');
   if (!picker) return;
   picker.innerHTML = '';
+
+  const row = document.createElement('div');
+  row.id = 'shape-picker-row';
   SHAPE_REGISTRY.filter(s => s.primary).forEach(shape => {
-    picker.appendChild(makeShapePickerBtn(shape, 'sp-btn'));
+    row.appendChild(makeShapePickerBtn(shape, 'sp-btn'));
   });
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
@@ -4926,8 +5118,47 @@ function buildShapePicker() {
   moreBtn.setAttribute('aria-label', 'More shapes');
   moreBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="4.5" cy="9" r="1.5" fill="currentColor"/><circle cx="9" cy="9" r="1.5" fill="currentColor"/><circle cx="13.5" cy="9" r="1.5" fill="currentColor"/></svg>`;
   moreBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleShapeMorePanel(); });
-  picker.appendChild(moreBtn);
+  row.appendChild(moreBtn);
+  picker.appendChild(row);
+
+  const flowLabel = document.createElement('div');
+  flowLabel.className = 'shape-flow-label';
+  flowLabel.textContent = 'Workflow arrows';
+  picker.appendChild(flowLabel);
+
+  const flowRow = document.createElement('div');
+  flowRow.id = 'shape-flow-row';
+  FLOW_ARROW_OPTIONS.forEach((opt) => {
+    if (opt.id === 'all') return; // shapes: single-direction only
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sp-btn sp-flow-btn' + (currentShapeFlowArrow === opt.id ? ' active' : '');
+    btn.dataset.flow = opt.id;
+    btn.dataset.tip = opt.tip;
+    btn.setAttribute('aria-label', opt.tip);
+    btn.innerHTML = opt.icon;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setShapeFlowArrow(opt.id);
+    });
+    flowRow.appendChild(btn);
+  });
+  picker.appendChild(flowRow);
+
   initShapeMorePanel();
+  syncShapeFlowPickerUi();
+}
+
+function setShapeFlowArrow(dir) {
+  const v = normalizeFlowArrow(dir);
+  currentShapeFlowArrow = v === 'all' ? 'none' : v;
+  syncShapeFlowPickerUi();
+}
+
+function syncShapeFlowPickerUi() {
+  document.querySelectorAll('#shape-flow-row .sp-flow-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.flow === currentShapeFlowArrow);
+  });
 }
 
 function buildLineSVG(type, x1, y1, x2, y2, stroke, sw) {
@@ -5223,6 +5454,8 @@ function renderShapeObj(obj) {
     // store reference for color updates
     el._updateShapeSvg = updateShapeSvg;
     el._label = label;
+
+    attachFlowArrows(el, obj, { chainable: false });
   }
 
   // click to select
@@ -10002,6 +10235,7 @@ function placeSticky(e) {
     color: stickyLastColor,
     text: '',
     zIndex: nextZIndex(),
+    flowArrow: normalizeFlowArrow(currentStickyFlowArrow),
     ...DEFAULT_STICKY_TEXT,
   });
   ensureStickyTextDefaults(obj);
@@ -10079,6 +10313,7 @@ function renderStickyFromObj(obj) {
 
   // ── SELECT on click anywhere on note
   el.addEventListener('mousedown', ev => {
+    if (ev.target.closest('.flow-arrow-plus')) return;
     ev.stopPropagation();
     obj.zIndex = nextZIndex();
     el.style.zIndex = obj.zIndex;
@@ -10134,6 +10369,8 @@ function renderStickyFromObj(obj) {
     if (!guardEditObject(obj)) return;
     startStickyResize(ev, el, obj);
   });
+
+  attachFlowArrows(el, obj, { chainable: true });
 
   canvasWorld.appendChild(el);
   return el;
@@ -10406,6 +10643,7 @@ function initBoardPickers() {
   try {
     initShapeToolbar();
     buildShapePicker();
+    buildStickyFlowPicker();
     buildStampPicker();
     ensureIconPickerReady();
     initIconToolbar();

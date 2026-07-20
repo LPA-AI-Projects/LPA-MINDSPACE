@@ -648,6 +648,7 @@ body.read-only-mode #toolbar,
 body.read-only-mode #tool-ai,
 body.read-only-mode #shape-picker,
 body.read-only-mode #shape-picker-more,
+body.read-only-mode #sticky-flow-picker,
 body.read-only-mode #sel-toolbar,
 body.read-only-mode #shape-toolbar,
 body.read-only-mode #image-toolbar,
@@ -1589,7 +1590,180 @@ body.tool-eraser #eraser-cursor{display:block}
   top: auto;
   transform: translateX(-50%);
 }
-#shape-picker.visible { display: flex; flex-direction: row; flex-wrap: wrap; max-width: min(420px, calc(100vw - 32px)); justify-content: center; }
+#shape-picker.visible { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: min(460px, calc(100vw - 32px)); }
+#shape-picker-row,
+#shape-flow-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.shape-flow-label {
+  width: 100%;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(251,251,251,0.35);
+  font-family: var(--font);
+  margin-top: 2px;
+}
+.sp-flow-btn svg { display: block; }
+
+#sticky-flow-picker {
+  position: fixed;
+  background: #141414;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 12px;
+  padding: 8px;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 400;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  left: 50%;
+  bottom: var(--tool-panel-bottom);
+  top: auto;
+  transform: translateX(-50%);
+  max-width: min(460px, calc(100vw - 32px));
+}
+#sticky-flow-picker.visible { display: flex; }
+.sticky-flow-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(251,251,251,0.35);
+  font-family: var(--font);
+}
+#sticky-flow-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.sf-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: rgba(251,251,251,0.55);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+  position: relative;
+}
+.sf-btn:hover { background: rgba(255,255,255,0.08); color: #fbfbfb; }
+.sf-btn.active { background: rgba(46,157,145,0.22); color: #2e9d91; }
+.sf-btn::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: #141414;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--font);
+  color: #fbfbfb;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.sf-btn:hover::after { opacity: 1; }
+
+/* Workflow arrows attached to stickies / shapes */
+.sticky-note,
+.shape-obj {
+  overflow: visible;
+}
+.flow-arrow-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+.flow-arrow {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #2e9d91;
+}
+.flow-arrow--right {
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: row;
+  padding-left: 4px;
+}
+.flow-arrow--left {
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: row-reverse;
+  padding-right: 4px;
+}
+.flow-arrow--top {
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-direction: column-reverse;
+  padding-bottom: 4px;
+}
+.flow-arrow--bottom {
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-direction: column;
+  padding-top: 4px;
+}
+.flow-arrow-shaft {
+  display: block;
+  flex-shrink: 0;
+}
+.flow-arrow-plus {
+  pointer-events: all;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid #2e9d91;
+  background: #fbfbfb;
+  color: #2e9d91;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin: 2px;
+  box-shadow: 0 2px 8px rgba(20,20,20,0.18);
+  padding: 0;
+  font-family: var(--font);
+}
+.flow-arrow-plus:hover {
+  background: #2e9d91;
+  color: #fff;
+  transform: scale(1.08);
+}
+.sticky-note.selected .flow-arrow-plus {
+  display: flex;
+}
+body.read-only-mode .flow-arrow-plus {
+  display: none !important;
+}
 .sp-btn {
   width: 36px; height: 36px;
   border-radius: 8px;
@@ -3515,6 +3689,7 @@ body:has(.app-shell){
 .board-shell .obj-toolbar:not(.visible),
 .board-shell #shape-picker:not(.visible),
 .board-shell #shape-picker-more:not(.visible),
+.board-shell #sticky-flow-picker:not(.visible),
 .board-shell #stamp-picker:not(.visible),
 .board-shell #icon-picker:not(.visible),
 .board-shell #pen-toolbar:not(.visible),

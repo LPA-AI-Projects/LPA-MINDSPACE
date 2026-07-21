@@ -19,8 +19,9 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js aiGuardrails.js ./
+COPY server.js aiGuardrails.js hrAgent.js hrSubmissionStore.js ./
 COPY --from=build /app/dist ./dist
+RUN mkdir -p /app/data
 
 EXPOSE 3000
 ENV PORT=3000

@@ -2199,6 +2199,9 @@ function updateFacilitatorUi() {
     if (!showHr && currentAiMode === 'hr') setAiMode('board');
   }
 
+  if (isFacilitator() && !isReadOnlyMode()) startHrFormAutoWatcher();
+  else stopHrFormAutoWatcher();
+
   updateSessionLifecycleMenu();
 }
 
@@ -10113,6 +10116,10 @@ const HR_AGENT_STAGES = [
 
 let hrSubmissionsCache = [];
 let hrInboxPollTimer = null;
+let hrAutoWatcherTimer = null;
+let hrAutoBusy = false;
+let hrWatcherSeeded = false;
+const hrSeenSubmissionIds = new Set();
 
 function escapeHrHtml(s) {
   return String(s || '')
@@ -10302,7 +10309,7 @@ function renderHrInboxList(submissions) {
 
 async function refreshHrSubmissions(opts = {}) {
   if (!isFacilitator()) {
-    showToast('HR AGENT is available to facilitators only');
+    if (!opts.silent) showToast('HR AGENT is available to facilitators only');
     return;
   }
   try {
@@ -10311,7 +10318,8 @@ async function refreshHrSubmissions(opts = {}) {
     if (!resp.ok) throw new Error(data.error || `Failed to load submissions (${resp.status})`);
     hrSubmissionsCache = data.submissions || [];
     if (opts.open) openHrAgentOverlay('inbox');
-    renderHrInboxList(hrSubmissionsCache);
+    const inbox = document.getElementById('hr-agent-inbox');
+    if (inbox && !inbox.hidden) renderHrInboxList(hrSubmissionsCache);
     const sub = document.getElementById('hr-agent-inbox-sub');
     if (sub) {
       sub.textContent = hrSubmissionsCache.length
@@ -10319,9 +10327,65 @@ async function refreshHrSubmissions(opts = {}) {
         : 'Waiting for Google Form → Apps Script webhook';
     }
     if (!opts.silent) showToast('Form inbox refreshed');
+    return hrSubmissionsCache;
   } catch (err) {
     console.error(err);
-    showToast(err.message || 'Could not refresh HR inbox');
+    if (!opts.silent) showToast(err.message || 'Could not refresh HR inbox');
+    return [];
+  }
+}
+
+async function pollHrFormAutoOpen() {
+  if (!isFacilitator() || isReadOnlyMode() || hrAutoBusy) return;
+  try {
+    const list = await refreshHrSubmissions({ silent: true });
+    if (!Array.isArray(list)) return;
+
+    if (!hrWatcherSeeded) {
+      list.forEach((item) => hrSeenSubmissionIds.add(item.id));
+      hrWatcherSeeded = true;
+      return;
+    }
+
+    const fresh = list
+      .filter((item) => item?.id && !hrSeenSubmissionIds.has(item.id))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    if (!fresh.length) return;
+    fresh.forEach((item) => hrSeenSubmissionIds.add(item.id));
+
+    const newest = fresh[0];
+    hrAutoBusy = true;
+    hideAiBar();
+    showToast(`New form received: ${newest.title || 'role'} — opening HR AGENT…`);
+    try {
+      await generateHrFromSubmission(newest.id);
+    } finally {
+      hrAutoBusy = false;
+    }
+  } catch (err) {
+    console.error('[hr-auto]', err);
+    hrAutoBusy = false;
+  }
+}
+
+function startHrFormAutoWatcher() {
+  if (!isFacilitator()) {
+    stopHrFormAutoWatcher();
+    return;
+  }
+  if (hrAutoWatcherTimer) return;
+  // Seed quickly, then poll for new Google Form submissions
+  pollHrFormAutoOpen();
+  hrAutoWatcherTimer = setInterval(() => {
+    pollHrFormAutoOpen();
+  }, 2500);
+}
+
+function stopHrFormAutoWatcher() {
+  if (hrAutoWatcherTimer) {
+    clearInterval(hrAutoWatcherTimer);
+    hrAutoWatcherTimer = null;
   }
 }
 
@@ -10531,6 +10595,7 @@ function downloadHrAgentHtml() {
 function initHrAgentUi() {
   syncAiModeUi();
   updateFacilitatorUi();
+  if (isFacilitator() && !isReadOnlyMode()) startHrFormAutoWatcher();
 }
 
 // ═══════════════════════════════════════════════════

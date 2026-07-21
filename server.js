@@ -260,18 +260,15 @@ app.post('/api/hr-agent/form-submit', async (req, res) => {
       source: 'google_form',
     });
 
-    setImmediate(() => {
-      processSubmissionJob(item.id).catch((err) => {
-        console.error('Background HR job failed', err);
-      });
-    });
+    // Do not generate in the background — the open facilitator board
+    // picks this up and runs live SSE animation → JD on canvas.
 
     return res.status(202).json({
       ok: true,
       id: item.id,
       status: 'pending',
       title: item.title,
-      message: 'Form received. HR AGENT is generating the job description.',
+      message: 'Form received. Open board will start HR AGENT automatically.',
     });
   } catch (err) {
     console.error('HR form-submit error:', err);

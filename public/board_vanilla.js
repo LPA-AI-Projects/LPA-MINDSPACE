@@ -87,7 +87,7 @@ function bindBoardDom() {
 
 const UI_CHROME_SELECTOR =
   '#board-bar-left, #board-bar-right, #viewport-return-banner, #toolbar, #zoom-panel, #share-dialog, #activity-panel, #export-menu, ' +
-  '#more-menu, #ai-bar, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, #sticky-toolbar, #sticky-flow-picker, ' +
+  '#more-menu, #ai-bar, #hr-agent-overlay, .ttb-menu, .obj-toolbar, #icon-picker, #shape-picker, #shape-picker-more, #stamp-picker, #pen-toolbar, #sticky-toolbar, #sticky-flow-picker, ' +
   '#shortcuts-overlay, #board-info-panel, #about-panel, #panel-backdrop, #minimap-wrap, ' +
   '#ctx-menu, #shape-convert-popup, #sticky-color-picker, #sel-ai-popup, #export-progress, #ai-loading';
 
@@ -366,6 +366,7 @@ function renderObjectFromData(obj) {
   if (obj.type === 'shape') return renderShapeObj(obj);
   if (obj.type === 'image') return renderImageObj(obj);
   if (obj.type === 'icon') return renderIconObj(obj);
+  if (obj.type === 'hrDoc') return renderHrDocFromObj(obj);
   if (obj.type === 'stroke') return addStrokeToSvg(getDrawingSvg(), obj);
   return null;
 }
@@ -675,6 +676,7 @@ function fitObjectsInView(ids) {
                 : obj.type==='image'  ? `.image-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='icon'   ? `.icon-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='shape'  ? `.shape-obj[data-obj-id="${obj.id}"]`
+                : obj.type==='hrDoc'  ? `.hr-doc-card[data-obj-id="${obj.id}"]`
                 : null;
       const el = sel ? canvasWorld.querySelector(sel) : null;
       const w = el ? el.offsetWidth  / state.zoom : (obj.w||200);
@@ -1714,6 +1716,8 @@ function redrawAll() {
     } else if (obj.type === 'icon') {
       const icEl = renderIconObj(obj);
       if (obj.locked && icEl) applyLockStyle(icEl);
+    } else if (obj.type === 'hrDoc') {
+      renderHrDocFromObj(obj);
     }
   });
 }
@@ -2110,6 +2114,8 @@ function selectAll() {
     if (img) img.classList.add('selected-image');
     const icon = document.querySelector(`.icon-obj[data-obj-id="${obj.id}"]`);
     if (icon) icon.classList.add('selected-icon');
+    const hrDoc = document.querySelector(`.hr-doc-card[data-obj-id="${obj.id}"]`);
+    if (hrDoc) hrDoc.classList.add('selected-hr-doc');
     const txt = document.querySelector(`.canvas-text[data-obj-id="${obj.id}"]`);
     if (txt) txt.style.border = '1.5px solid #2e9d91';
   });
@@ -2184,6 +2190,13 @@ function updateFacilitatorUi() {
   const activityBtn = document.getElementById('activity-panel-btn');
   if (activityBtn) {
     activityBtn.classList.toggle('visible', !!access.sessionId);
+  }
+
+  const hrChip = document.getElementById('ai-mode-hr');
+  if (hrChip) {
+    const showHr = isFacilitator();
+    hrChip.hidden = !showHr;
+    if (!showHr && currentAiMode === 'hr') setAiMode('board');
   }
 
   updateSessionLifecycleMenu();
@@ -3784,6 +3797,8 @@ window.addEventListener('beforeunload', () => {
 let selectedIds = new Set();
 let isBoxSelecting = false;
 let boxSelectStart = null;
+let currentAiMode = 'board';
+let latestHrAgentResult = null;
 
 // ─── Core: select one object (or add to multi-select with ctrl)
 function selectObject(id, addToSelection) {
@@ -3811,6 +3826,9 @@ function selectObject(id, addToSelection) {
       if (el._lineHandles) el._lineHandles.forEach((h) => { h.el.style.display = 'block'; });
       if (typeof showShapeToolbar === 'function') showShapeToolbar(el);
     }
+  } else if (obj.type === 'hrDoc') {
+    const el = document.querySelector(`.hr-doc-card[data-obj-id="${id}"]`);
+    if (el) el.classList.add('selected-hr-doc');
   } else if (obj.type === 'text') {
     const el = document.querySelector(`.canvas-text[data-obj-id="${id}"]`);
     if (el) {
@@ -3843,6 +3861,7 @@ function clearAllSelections() {
   selectedIds.clear();
   selectedStickyId = null;
   document.querySelectorAll('.sticky-note.selected').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.hr-doc-card.selected-hr-doc').forEach(el => el.classList.remove('selected-hr-doc'));
   document.querySelectorAll('.canvas-text.sel-active').forEach(el => {
     el.classList.remove('sel-active');
     el.style.border = '1.5px solid transparent';
@@ -4031,6 +4050,19 @@ function handleSelectMousedown(e) {
     const id = iconEl.dataset.objId;
     selectIconObj(id, addMode);
     startObjDrag(e, id);
+    e.stopPropagation();
+    return;
+  }
+
+  // HR doc card
+  const hrDocEl = target.closest('.hr-doc-card');
+  if (hrDocEl) {
+    const id = hrDocEl.dataset.objId;
+    if (!addMode) clearAllSelections();
+    selectObject(id, true);
+    if (!target.closest('.hr-doc-card-body') || target.closest('[data-drag]')) {
+      startObjDrag(e, id);
+    }
     e.stopPropagation();
     return;
   }
@@ -4272,6 +4304,17 @@ function applyBoxSelect(bx, by, bw, bh) {
       hit = true;
     }
   });
+  // HR docs
+  document.querySelectorAll('.hr-doc-card').forEach(el => {
+    if (overlaps(el.getBoundingClientRect())) {
+      const id = el.dataset.objId;
+      const obj = state.objects.find((o) => o.id === id);
+      if (!obj || !canSelectObjectForEdit(obj)) return;
+      selectedIds.add(id);
+      el.classList.add('selected-hr-doc');
+      hit = true;
+    }
+  });
   // icons
   document.querySelectorAll('.icon-obj').forEach(el => {
     if (overlaps(el.getBoundingClientRect())) {
@@ -4325,6 +4368,7 @@ function deleteSelectedObj() {
     canvasWorld.querySelector(`.shape-obj[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.image-obj[data-obj-id="${id}"]`)?.remove();
     canvasWorld.querySelector(`.icon-obj[data-obj-id="${id}"]`)?.remove();
+    canvasWorld.querySelector(`.hr-doc-card[data-obj-id="${id}"]`)?.remove();
     document.querySelector(`path[data-obj-id="${id}"]`)?.remove();
     state.objects = state.objects.filter(o => o.id !== id);
   });
@@ -4371,6 +4415,8 @@ function duplicateSelectedObj() {
       addStrokeToSvg(getDrawingSvg(), copy);
     } else if (obj.type === 'icon') {
       renderIconObj(copy);
+    } else if (obj.type === 'hrDoc') {
+      renderHrDocFromObj(copy);
     }
   });
   clearAllSelections();
@@ -7669,6 +7715,7 @@ function getBoardBounds() {
                 : obj.type==='image'  ? `.image-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='icon'   ? `.icon-obj[data-obj-id="${obj.id}"]`
                 : obj.type==='shape'  ? `.shape-obj[data-obj-id="${obj.id}"]`
+                : obj.type==='hrDoc'  ? `.hr-doc-card[data-obj-id="${obj.id}"]`
                 : null;
       const domEl = sel ? document.querySelector(sel) : null;
       if (domEl) {
@@ -9626,17 +9673,44 @@ function showAiBar(btn) {
   const bar = document.getElementById('ai-bar');
   if (!bar) return;
   dismissOtherPopups({ aiBar: true });
+  updateFacilitatorUi();
   bar.classList.add('visible');
   btn?.classList.add('open');
+  syncAiModeUi();
   requestAnimationFrame(() => {
     positionAiBar(btn || document.getElementById('tool-ai'));
-    document.getElementById('ai-input')?.focus();
+    if (currentAiMode === 'board') document.getElementById('ai-input')?.focus();
   });
 }
 
 function hideAiBar() {
   document.getElementById('ai-bar')?.classList.remove('visible');
   document.getElementById('tool-ai')?.classList.remove('open');
+}
+
+function setAiMode(mode) {
+  currentAiMode = mode === 'hr' ? 'hr' : 'board';
+  if (currentAiMode === 'hr' && !isFacilitator()) {
+    currentAiMode = 'board';
+    showToast('HR AGENT is available to facilitators only');
+  }
+  syncAiModeUi();
+  const bar = document.getElementById('ai-bar');
+  if (bar?.classList.contains('visible')) {
+    requestAnimationFrame(() => positionAiBar(document.getElementById('tool-ai')));
+  }
+}
+
+function syncAiModeUi() {
+  const bar = document.getElementById('ai-bar');
+  const boardRow = document.getElementById('ai-bar-board-row');
+  const hrRow = document.getElementById('ai-bar-hr-row');
+  document.querySelectorAll('.ai-mode-chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.dataset.aiMode === currentAiMode);
+  });
+  if (bar) bar.classList.toggle('ai-bar--hr', currentAiMode === 'hr');
+  if (boardRow) boardRow.hidden = currentAiMode !== 'board';
+  if (hrRow) hrRow.hidden = currentAiMode !== 'hr';
 }
 
 function toggleAiBar(btn) {
@@ -10022,6 +10096,442 @@ async function submitSelectionAi() {
   }
 }
 
+
+// ═══════════════════════════════════════════════════
+// HR AGENT — facilitator-only JD generator (Google Form)
+// ═══════════════════════════════════════════════════
+
+const HR_AGENT_STAGES = [
+  { id: 'received', label: 'Form received' },
+  { id: 'mapping', label: 'Mapping fields' },
+  { id: 'extracting_fields', label: 'Interpreting form' },
+  { id: 'validating', label: 'Validating inputs' },
+  { id: 'llm', label: 'Sent to LLM' },
+  { id: 'generating', label: 'Writing JD' },
+  { id: 'complete', label: 'Output ready' },
+];
+
+let hrSubmissionsCache = [];
+let hrInboxPollTimer = null;
+
+function escapeHrHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function markdownToHrHtml(md) {
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      out.push('</ul>');
+      inList = false;
+    }
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+    if (/^###\s+/.test(trimmed)) {
+      closeList();
+      out.push(`<h3>${escapeHrHtml(trimmed.replace(/^###\s+/, ''))}</h3>`);
+      return;
+    }
+    if (/^##\s+/.test(trimmed)) {
+      closeList();
+      out.push(`<h2>${escapeHrHtml(trimmed.replace(/^##\s+/, ''))}</h2>`);
+      return;
+    }
+    if (/^#\s+/.test(trimmed)) {
+      closeList();
+      out.push(`<h1>${escapeHrHtml(trimmed.replace(/^#\s+/, ''))}</h1>`);
+      return;
+    }
+    if (/^[-*•]\s+/.test(trimmed)) {
+      if (!inList) {
+        out.push('<ul>');
+        inList = true;
+      }
+      out.push(`<li>${escapeHrHtml(trimmed.replace(/^[-*•]\s+/, ''))}</li>`);
+      return;
+    }
+    closeList();
+    out.push(`<p>${escapeHrHtml(trimmed)}</p>`);
+  });
+  closeList();
+  return out.join('\n');
+}
+
+function buildHrStageRail() {
+  const rail = document.getElementById('hr-stage-rail');
+  if (!rail) return;
+  rail.innerHTML = HR_AGENT_STAGES.map((stage) => `
+    <div class="hr-stage-card is-pending" data-stage="${stage.id}">
+      <div class="hr-stage-orb" aria-hidden="true"></div>
+      <div class="hr-stage-label">${escapeHrHtml(stage.label)}</div>
+      <div class="hr-stage-msg">Waiting…</div>
+    </div>
+  `).join('');
+}
+
+function setHrStageProgress(stageId, message, state = 'active') {
+  const cards = [...document.querySelectorAll('#hr-stage-rail .hr-stage-card')];
+  const idx = HR_AGENT_STAGES.findIndex((s) => s.id === stageId);
+  cards.forEach((card, i) => {
+    const id = card.dataset.stage;
+    card.classList.remove('is-active', 'is-done', 'is-pending', 'is-error');
+    if (state === 'error' && id === stageId) {
+      card.classList.add('is-error');
+      const msg = card.querySelector('.hr-stage-msg');
+      if (msg) msg.textContent = message || 'Failed';
+      return;
+    }
+    if (idx >= 0 && i < idx) card.classList.add('is-done');
+    else if (id === stageId) {
+      card.classList.add(state === 'done' ? 'is-done' : 'is-active');
+      const msg = card.querySelector('.hr-stage-msg');
+      if (msg) msg.textContent = message || (state === 'done' ? 'Done' : 'In progress…');
+    } else card.classList.add('is-pending');
+  });
+  if (idx >= 0 && state !== 'error') {
+    for (let i = 0; i < idx; i += 1) {
+      const msg = cards[i]?.querySelector('.hr-stage-msg');
+      if (msg && (!msg.textContent || msg.textContent === 'Waiting…')) msg.textContent = 'Done';
+    }
+  }
+  const title = document.getElementById('hr-agent-progress-title');
+  const sub = document.getElementById('hr-agent-progress-sub');
+  if (title && stageId) {
+    const meta = HR_AGENT_STAGES.find((s) => s.id === stageId);
+    title.textContent = meta?.label || 'Processing';
+  }
+  if (sub && message) sub.textContent = message;
+}
+
+function showHrOverlaySection(section) {
+  const inbox = document.getElementById('hr-agent-inbox');
+  const progress = document.getElementById('hr-agent-progress');
+  const result = document.getElementById('hr-agent-result');
+  if (inbox) inbox.hidden = section !== 'inbox';
+  if (progress) progress.hidden = section !== 'progress';
+  if (result) result.hidden = section !== 'result';
+}
+
+function openHrAgentOverlay(section = 'inbox') {
+  const overlay = document.getElementById('hr-agent-overlay');
+  if (!overlay) return;
+  overlay.classList.add('visible');
+  overlay.setAttribute('aria-hidden', 'false');
+  showHrOverlaySection(section);
+  if (section === 'progress') buildHrStageRail();
+}
+
+function closeHrAgentOverlay() {
+  const overlay = document.getElementById('hr-agent-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  overlay.setAttribute('aria-hidden', 'true');
+  if (hrInboxPollTimer) {
+    clearInterval(hrInboxPollTimer);
+    hrInboxPollTimer = null;
+  }
+}
+
+function showHrAgentResult(result) {
+  latestHrAgentResult = result;
+  showHrOverlaySection('result');
+  const doc = document.getElementById('hr-agent-doc');
+  const title = document.getElementById('hr-agent-result-title');
+  if (title) title.textContent = result.title || 'Job description ready';
+  if (doc) doc.innerHTML = markdownToHrHtml(result.markdown);
+  placeHrDocOnCanvas(result);
+}
+
+function formatHrTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString();
+  } catch (_e) {
+    return String(iso);
+  }
+}
+
+function renderHrInboxList(submissions) {
+  const list = document.getElementById('hr-inbox-list');
+  if (!list) return;
+  if (!submissions.length) {
+    list.innerHTML = `
+      <div class="hr-inbox-empty">
+        No form submissions yet.<br/>
+        Submit the Google Form, then Refresh.<br/>
+        Use <strong>Generate JD</strong> or <strong>Watch animation</strong> to see the live processing stages.
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = submissions.map((item) => {
+    const status = item.status || 'pending';
+    const statusClass =
+      status === 'ready' ? 'is-ready'
+        : status === 'error' ? 'is-error'
+          : 'is-pending';
+    const primaryAction = status === 'ready'
+      ? `<button type="button" class="hr-agent-btn hr-agent-btn--primary" onclick="openHrSubmission('${item.id}')">Open JD</button>`
+      : `<button type="button" class="hr-agent-btn hr-agent-btn--primary" onclick="generateHrFromSubmission('${item.id}')">Generate JD</button>`;
+    const regen = `<button type="button" class="hr-agent-btn" onclick="generateHrFromSubmission('${item.id}')" title="Run with live progress animation">${status === 'ready' ? 'Watch animation' : 'Retry'}</button>`;
+    return `
+      <div class="hr-inbox-item" data-id="${escapeHrHtml(item.id)}">
+        <div class="hr-inbox-item-main">
+          <div class="hr-inbox-item-title">${escapeHrHtml(item.title || 'Untitled role')}</div>
+          <div class="hr-inbox-item-meta">
+            <span class="hr-inbox-status ${statusClass}">${escapeHrHtml(status)}</span>
+            ${escapeHrHtml(formatHrTime(item.createdAt))}
+            ${item.error ? ` · ${escapeHrHtml(item.error)}` : ''}
+          </div>
+        </div>
+        <div class="hr-inbox-actions">${primaryAction}${regen}</div>
+      </div>`;
+  }).join('');
+}
+
+async function refreshHrSubmissions(opts = {}) {
+  if (!isFacilitator()) {
+    showToast('HR AGENT is available to facilitators only');
+    return;
+  }
+  try {
+    const resp = await fetch(`${getApiBase()}/api/hr-agent/submissions?limit=30`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `Failed to load submissions (${resp.status})`);
+    hrSubmissionsCache = data.submissions || [];
+    if (opts.open) openHrAgentOverlay('inbox');
+    renderHrInboxList(hrSubmissionsCache);
+    const sub = document.getElementById('hr-agent-inbox-sub');
+    if (sub) {
+      sub.textContent = hrSubmissionsCache.length
+        ? `${hrSubmissionsCache.length} recent Google Form submission${hrSubmissionsCache.length === 1 ? '' : 's'}`
+        : 'Waiting for Google Form → Apps Script webhook';
+    }
+    if (!opts.silent) showToast('Form inbox refreshed');
+  } catch (err) {
+    console.error(err);
+    showToast(err.message || 'Could not refresh HR inbox');
+  }
+}
+
+function openHrSubmissionsPanel() {
+  if (!isFacilitator()) {
+    showToast('HR AGENT is available to facilitators only');
+    return;
+  }
+  hideAiBar();
+  openHrAgentOverlay('inbox');
+  refreshHrSubmissions({ silent: true });
+  if (hrInboxPollTimer) clearInterval(hrInboxPollTimer);
+  hrInboxPollTimer = setInterval(() => {
+    refreshHrSubmissions({ silent: true });
+  }, 8000);
+}
+
+async function openHrSubmission(id) {
+  try {
+    const resp = await fetch(`${getApiBase()}/api/hr-agent/submissions/${encodeURIComponent(id)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || 'Submission not found');
+    const sub = data.submission;
+    if (sub.status !== 'ready' || !sub.markdown) {
+      showToast('JD not ready yet — try Generate');
+      return;
+    }
+    openHrAgentOverlay('result');
+    showHrAgentResult({
+      markdown: sub.markdown,
+      title: sub.title,
+      company: sub.company,
+      managerInputs: sub.managerInputs,
+      warnings: sub.warnings,
+    });
+  } catch (err) {
+    showToast(err.message || 'Could not open submission');
+  }
+}
+
+async function generateHrFromSubmission(id) {
+  if (!isFacilitator()) {
+    showToast('HR AGENT is available to facilitators only');
+    return;
+  }
+  if (isReadOnlyMode()) {
+    showToast('View-only mode: editing disabled');
+    return;
+  }
+
+  hideAiBar();
+  openHrAgentOverlay('progress');
+  setHrStageProgress('received', 'Starting from Google Form submission…');
+
+  try {
+    const response = await fetch(`${getApiBase()}/api/hr-agent/generate/${encodeURIComponent(id)}`, {
+      method: 'POST',
+    });
+    if (!response.ok || !response.body) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || `HR AGENT failed (${response.status})`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawResult = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        const lines = chunk.split('\n');
+        let eventName = 'message';
+        const dataLines = [];
+        lines.forEach((line) => {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        });
+        if (!dataLines.length) continue;
+        let payload = {};
+        try {
+          payload = JSON.parse(dataLines.join('\n'));
+        } catch (_e) {
+          continue;
+        }
+
+        if (eventName === 'progress') {
+          const stage = payload.stage || 'mapping';
+          setHrStageProgress(stage, payload.message || stage, stage === 'complete' ? 'done' : 'active');
+        } else if (eventName === 'result') {
+          sawResult = true;
+          setHrStageProgress('complete', 'Job description ready', 'done');
+          setTimeout(() => showHrAgentResult(payload), 450);
+        } else if (eventName === 'error') {
+          setHrStageProgress(payload.source === 'validation' ? 'validating' : 'extracting_fields', payload.error || 'Failed', 'error');
+          const sub = document.getElementById('hr-agent-progress-sub');
+          if (sub) sub.textContent = payload.error || 'HR AGENT failed';
+          showToast(payload.error || 'HR AGENT failed');
+          return;
+        }
+      }
+    }
+
+    if (!sawResult) throw new Error('HR AGENT ended without a result');
+  } catch (err) {
+    console.error(err);
+    setHrStageProgress('extracting_fields', err.message || 'Failed', 'error');
+    showToast(err.message || 'HR AGENT failed');
+  }
+}
+
+function placeHrDocOnCanvas(result) {
+  if (!result?.markdown) return;
+  let startX = Math.round(-state.panX / state.zoom + 80);
+  let startY = Math.round(-state.panY / state.zoom + 80);
+  if (state.objects.length > 0) {
+    const bounds = getBoardBounds();
+    startX = Math.round(bounds.x + bounds.w + 80);
+    startY = Math.round(bounds.y);
+  }
+  const obj = stampOwner({
+    id: uid(),
+    type: 'hrDoc',
+    x: startX,
+    y: startY,
+    w: 420,
+    h: 560,
+    title: result.title || 'Job Description',
+    markdown: result.markdown,
+    company: result.company || 'Learners Point Academy',
+    zIndex: nextZIndex(),
+  });
+  state.objects.push(obj);
+  updateObjectCount();
+  renderHrDocFromObj(obj);
+  selectObject(obj.id, false);
+  History.push();
+  saveToStorage();
+  showToast('JD placed on board');
+}
+
+function renderHrDocFromObj(obj) {
+  const el = document.createElement('div');
+  el.className = 'hr-doc-card';
+  el.dataset.objId = obj.id;
+  el.style.cssText = `left:${obj.x}px;top:${obj.y}px;width:${obj.w || 420}px;z-index:${obj.zIndex || 10};`;
+  el.innerHTML = `
+    <div class="hr-doc-card-head" data-drag="true">
+      <div class="hr-doc-card-kicker">HR AGENT · ${escapeHrHtml(obj.company || 'Learners Point Academy')}</div>
+      <div class="hr-doc-card-title">${escapeHrHtml(obj.title || 'Job Description')}</div>
+    </div>
+    <div class="hr-doc-card-body">${markdownToHrHtml(obj.markdown)}</div>
+  `;
+  el.addEventListener('mousedown', (ev) => {
+    if (state.tool !== 'select') return;
+    ev.stopPropagation();
+    selectObject(obj.id, ev.ctrlKey || ev.metaKey);
+    if (ev.target.closest('[data-drag]') || !ev.target.closest('.hr-doc-card-body')) {
+      startObjDrag(ev, obj.id);
+    }
+  });
+  canvasWorld.appendChild(el);
+  return el;
+}
+
+function copyHrAgentMarkdown() {
+  const md = latestHrAgentResult?.markdown;
+  if (!md) return;
+  navigator.clipboard?.writeText(md).then(
+    () => showToast('Copied job description'),
+    () => showToast('Could not copy'),
+  );
+}
+
+function downloadHrAgentMarkdown() {
+  const md = latestHrAgentResult?.markdown;
+  if (!md) return;
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(latestHrAgentResult.title || 'job-description').replace(/[^\w\-]+/g, '_')}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function downloadHrAgentHtml() {
+  const md = latestHrAgentResult?.markdown;
+  if (!md) return;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHrHtml(latestHrAgentResult.title || 'Job Description')}</title>
+  <style>
+    body{font-family:Georgia,serif;max-width:720px;margin:40px auto;padding:0 20px;color:#1c1a17;background:#f7f4ef;line-height:1.55}
+    h1{font-size:28px} h2{color:#1f4f4a;border-bottom:1px solid rgba(31,79,74,.2);padding-bottom:6px}
+    ul{padding-left:1.2em}
+  </style></head><body>${markdownToHrHtml(md)}</body></html>`;
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(latestHrAgentResult.title || 'job-description').replace(/[^\w\-]+/g, '_')}.html`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function initHrAgentUi() {
+  syncAiModeUi();
+  updateFacilitatorUi();
+}
 
 // ═══════════════════════════════════════════════════
 // MORE OPTIONS MENU
@@ -10701,6 +11211,7 @@ function initBoardPickers() {
     ensureIconPickerReady();
     initIconToolbar();
     initStickyToolbar();
+    initHrAgentUi();
   } catch (e) {
     console.error('[board] initBoardPickers failed', e);
   }
@@ -10757,6 +11268,15 @@ Object.assign(window, {
   sendBoardInvite,
   toggleAiBar,
   hideAiBar,
+  setAiMode,
+  refreshHrSubmissions,
+  openHrSubmissionsPanel,
+  openHrSubmission,
+  generateHrFromSubmission,
+  closeHrAgentOverlay,
+  copyHrAgentMarkdown,
+  downloadHrAgentMarkdown,
+  downloadHrAgentHtml,
   toggleMoreMenu,
   hideMoreMenu,
   saveAndCloseSession,

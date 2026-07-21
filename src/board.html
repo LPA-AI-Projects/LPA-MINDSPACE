@@ -461,17 +461,81 @@
 
 <!-- AI PROMPT POPUP (opened from toolbar) -->
 <div id="ai-bar">
-  <span class="ai-bar-icon" aria-hidden="true">✦</span>
-  <input id="ai-input" placeholder="Ask AI…"
-    maxlength="500"
-    autocomplete="off" spellcheck="false"
-    onkeydown="handleAiKey(event)"/>
-  <button class="ai-bar-send" id="ai-send-btn" onclick="submitAiPrompt()" title="Generate (Enter)">
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-      <path d="M12 7H2M8 3l4 4-4 4" stroke="currentColor" stroke-width="1.5"
-        stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-  </button>
+  <div class="ai-bar-modes" id="ai-bar-modes">
+    <button type="button" class="ai-mode-chip active" data-ai-mode="board" onclick="setAiMode('board')">Board AI</button>
+    <button type="button" class="ai-mode-chip ai-mode-chip--hr" id="ai-mode-hr" data-ai-mode="hr" onclick="setAiMode('hr')" hidden>HR AGENT</button>
+  </div>
+  <div class="ai-bar-board-row" id="ai-bar-board-row">
+    <span class="ai-bar-icon" aria-hidden="true">✦</span>
+    <input id="ai-input" placeholder="Ask AI…"
+      maxlength="500"
+      autocomplete="off" spellcheck="false"
+      onkeydown="handleAiKey(event)"/>
+    <button class="ai-bar-send" id="ai-send-btn" onclick="submitAiPrompt()" title="Generate (Enter)">
+      <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+        <path d="M12 7H2M8 3l4 4-4 4" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+  <div class="ai-bar-hr-row" id="ai-bar-hr-row" hidden>
+    <div class="ai-hr-copy">
+      <strong>HR AGENT</strong>
+      <span>Pull latest Google Form submissions</span>
+    </div>
+    <button type="button" class="ai-hr-upload-btn" id="ai-hr-refresh-btn" onclick="refreshHrSubmissions()">
+      Refresh
+    </button>
+    <button type="button" class="ai-hr-upload-btn ai-hr-upload-btn--ghost" id="ai-hr-open-btn" onclick="openHrSubmissionsPanel()">
+      Open inbox
+    </button>
+  </div>
+</div>
+
+<!-- HR AGENT submissions inbox + processing + result -->
+<div id="hr-agent-overlay" aria-hidden="true">
+  <div class="hr-agent-shell">
+    <div class="hr-agent-inbox" id="hr-agent-inbox">
+      <div class="hr-agent-progress-head">
+        <div>
+          <div class="hr-agent-kicker">HR AGENT</div>
+          <h2>Form inbox</h2>
+          <p id="hr-agent-inbox-sub">Submissions from Google Form → Apps Script webhook</p>
+        </div>
+        <div class="hr-agent-result-actions">
+          <button type="button" class="hr-agent-btn" onclick="refreshHrSubmissions({ open: true })">Refresh</button>
+          <button type="button" class="hr-agent-close" onclick="closeHrAgentOverlay()" aria-label="Close">×</button>
+        </div>
+      </div>
+      <div class="hr-inbox-list" id="hr-inbox-list"></div>
+    </div>
+    <div class="hr-agent-progress" id="hr-agent-progress" hidden>
+      <div class="hr-agent-progress-head">
+        <div>
+          <div class="hr-agent-kicker">HR AGENT</div>
+          <h2 id="hr-agent-progress-title">Processing form submission</h2>
+          <p id="hr-agent-progress-sub">Live backend stages</p>
+        </div>
+        <button type="button" class="hr-agent-close" onclick="closeHrAgentOverlay()" aria-label="Close">×</button>
+      </div>
+      <div class="hr-stage-rail" id="hr-stage-rail"></div>
+    </div>
+    <div class="hr-agent-result" id="hr-agent-result" hidden>
+      <div class="hr-agent-result-head">
+        <div>
+          <div class="hr-agent-kicker">Job description</div>
+          <h2 id="hr-agent-result-title">Ready</h2>
+        </div>
+        <div class="hr-agent-result-actions">
+          <button type="button" class="hr-agent-btn" onclick="copyHrAgentMarkdown()">Copy</button>
+          <button type="button" class="hr-agent-btn" onclick="downloadHrAgentMarkdown()">Download .md</button>
+          <button type="button" class="hr-agent-btn hr-agent-btn--primary" onclick="downloadHrAgentHtml()">Download HTML</button>
+          <button type="button" class="hr-agent-close" onclick="closeHrAgentOverlay()" aria-label="Close">×</button>
+        </div>
+      </div>
+      <article class="hr-agent-doc" id="hr-agent-doc"></article>
+    </div>
+  </div>
 </div>
 
 <!-- AI LOADING INDICATOR -->

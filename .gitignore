@@ -16,6 +16,7 @@ node_modules/.vite
 dist
 dist-ssr
 *.local
+data/hr-submissions.json
 
 # Editor directories and files
 .vscode/*

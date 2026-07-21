@@ -1245,13 +1245,13 @@ function placeText(e) {
         if (wrap.classList.contains('is-editing') || document.activeElement === editable) return;
         const text = (obj.content || editable.textContent || '').trim();
         if (!text) {
-          wrap.remove();
-          state.objects = state.objects.filter(o => o.id !== obj.id);
-          updateObjectCount();
-          return;
-        }
-        wrap.style.border = '1.5px solid transparent';
-        editable.removeEventListener('blur', onFirstBlur);
+        wrap.remove();
+        state.objects = state.objects.filter(o => o.id !== obj.id);
+        updateObjectCount();
+        return;
+      }
+      wrap.style.border = '1.5px solid transparent';
+      editable.removeEventListener('blur', onFirstBlur);
       });
     };
     editable.addEventListener('blur', onFirstBlur);
@@ -3802,6 +3802,15 @@ function selectObject(id, addToSelection) {
     const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
     if (el) el.classList.add('selected');
     selectedStickyId = id;
+  } else if (obj.type === 'shape') {
+    const el = document.querySelector(`.shape-obj[data-obj-id="${id}"]`);
+    if (el) {
+      selectedShapeId = id;
+      el.classList.add('selected-shape');
+      el.querySelectorAll('.shape-resize-handle').forEach((rh) => { rh.style.display = 'block'; });
+      if (el._lineHandles) el._lineHandles.forEach((h) => { h.el.style.display = 'block'; });
+      if (typeof showShapeToolbar === 'function') showShapeToolbar(el);
+    }
   } else if (obj.type === 'text') {
     const el = document.querySelector(`.canvas-text[data-obj-id="${id}"]`);
     if (el) {
@@ -4843,14 +4852,14 @@ let shapeMoreOpen = false;
 let shapePickerSearch = '';
 
 function makeShapePickerBtn(shape, className) {
-  const btn = document.createElement('button');
+    const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = className + (currentShapeType === shape.id ? ' active' : '');
-  btn.id = 'sp-' + shape.id;
-  btn.dataset.shape = shape.id;
-  btn.dataset.tip = shape.label;
-  btn.innerHTML = shape.icon;
-  btn.addEventListener('click', () => setShapeType(shape.id));
+    btn.id = 'sp-' + shape.id;
+    btn.dataset.shape = shape.id;
+    btn.dataset.tip = shape.label;
+    btn.innerHTML = shape.icon;
+    btn.addEventListener('click', () => setShapeType(shape.id));
   return btn;
 }
 
@@ -4998,7 +5007,7 @@ function attachFlowArrows(el, obj, options = {}) {
       plus.type = 'button';
       plus.className = 'flow-arrow-plus';
       plus.title = 'Add next step';
-      plus.setAttribute('aria-label', `Add sticky ${dir}`);
+      plus.setAttribute('aria-label', `Add next ${obj.type === 'shape' ? 'shape' : 'sticky'} ${dir}`);
       plus.textContent = '+';
       plus.addEventListener('mousedown', (ev) => {
         ev.stopPropagation();
@@ -5008,7 +5017,7 @@ function attachFlowArrows(el, obj, options = {}) {
         ev.stopPropagation();
         ev.preventDefault();
         if (!guardEditObject(obj)) return;
-        chainStickyFromFlowArrow(obj, dir);
+        chainFromFlowArrow(obj, dir);
       });
       wrap.appendChild(plus);
     }
@@ -5017,18 +5026,29 @@ function attachFlowArrows(el, obj, options = {}) {
   el.appendChild(layer);
 }
 
+function flowChainOffset(sourceObj, dir, w, h) {
+  const GAP = 72;
+  let x = sourceObj.x;
+  let y = sourceObj.y;
+  if (dir === 'right') x = sourceObj.x + (sourceObj.w || w) + GAP;
+  if (dir === 'left') x = sourceObj.x - w - GAP;
+  if (dir === 'bottom') y = sourceObj.y + (sourceObj.h || h) + GAP;
+  if (dir === 'top') y = sourceObj.y - h - GAP;
+  return { x, y };
+}
+
+function chainFromFlowArrow(sourceObj, dir) {
+  if (!sourceObj) return;
+  if (sourceObj.type === 'sticky') return chainStickyFromFlowArrow(sourceObj, dir);
+  if (sourceObj.type === 'shape') return chainShapeFromFlowArrow(sourceObj, dir);
+}
+
 function chainStickyFromFlowArrow(sourceObj, dir) {
   if (!sourceObj || sourceObj.type !== 'sticky') return;
   if (!guardEditObject(sourceObj)) return;
   const W = sourceObj.w || 220;
   const H = sourceObj.h || 180;
-  const GAP = 72;
-  let x = sourceObj.x;
-  let y = sourceObj.y;
-  if (dir === 'right') x = sourceObj.x + (sourceObj.w || W) + GAP;
-  if (dir === 'left') x = sourceObj.x - W - GAP;
-  if (dir === 'bottom') y = sourceObj.y + (sourceObj.h || H) + GAP;
-  if (dir === 'top') y = sourceObj.y - H - GAP;
+  const { x, y } = flowChainOffset(sourceObj, dir, W, H);
 
   const nextFlow = normalizeFlowArrow(sourceObj.flowArrow) === 'all' ? 'all' : dir;
   const obj = stampOwner({
@@ -5064,6 +5084,38 @@ function chainStickyFromFlowArrow(sourceObj, dir) {
   History.push();
   saveToStorage();
   showToast('Next sticky added');
+}
+
+function chainShapeFromFlowArrow(sourceObj, dir) {
+  if (!sourceObj || sourceObj.type !== 'shape') return;
+  if (shapeIsLine(sourceObj.shapeType)) return;
+  if (!guardEditObject(sourceObj)) return;
+  const W = sourceObj.w || 120;
+  const H = sourceObj.h || 80;
+  const { x, y } = flowChainOffset(sourceObj, dir, W, H);
+  const nextFlow = normalizeFlowArrow(sourceObj.flowArrow) === 'all' ? 'none' : dir;
+
+  const obj = stampOwner({
+    id: uid(),
+    type: 'shape',
+    shapeType: sourceObj.shapeType || 'rect',
+    x,
+    y,
+    w: W,
+    h: H,
+    fill: sourceObj.fill ?? '#fbfbfb',
+    stroke: sourceObj.stroke || '#141414',
+    strokeWidth: sourceObj.strokeWidth ?? 1.5,
+    label: '',
+    flowArrow: nextFlow === 'all' ? 'none' : nextFlow,
+  });
+  state.objects.push(obj);
+  updateObjectCount();
+  renderShapeObj(obj);
+  selectObject(obj.id, false);
+  History.push();
+  saveToStorage();
+  showToast('Next shape added');
 }
 
 function buildStickyFlowPicker() {
@@ -5211,7 +5263,7 @@ function renderShapeObj(obj) {
       const mk = (suffix) => {
         const mid = 'ah-' + suffix + '-' + obj.id;
         return { id: mid, html: `<marker id="${mid}" viewBox="0 0 10 10" refX="9" refY="5"
-          markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M1 1L9 5L1 9" fill="none" stroke="${stroke}" stroke-width="1.5"
             stroke-linecap="round" stroke-linejoin="round"/></marker>` };
       };
@@ -5455,11 +5507,12 @@ function renderShapeObj(obj) {
     el._updateShapeSvg = updateShapeSvg;
     el._label = label;
 
-    attachFlowArrows(el, obj, { chainable: false });
+    attachFlowArrows(el, obj, { chainable: true });
   }
 
   // click to select
   el.addEventListener('mousedown', ev => {
+    if (ev.target.closest('.flow-arrow-plus')) return;
     if (state.tool === 'select') {
       ev.stopPropagation();
       // if already part of multi-selection, don't clear — just drag the group
@@ -5715,18 +5768,18 @@ async function uploadBoardImageDataUrl(dataUrl, objectId, ext = 'jpg') {
 }
 
 async function resolveImageSrcForBoard(dataUrl, objectId) {
-  const compressed = await compressImageDataUrl(dataUrl);
+    const compressed = await compressImageDataUrl(dataUrl);
   const ext = compressed.dataUrl.includes('image/png') ? 'png' : 'jpg';
   const uploaded = await uploadBoardImageDataUrl(compressed.dataUrl, objectId, ext);
   if (!uploaded) {
     throw new Error('Image upload failed — create the board-images bucket in Supabase (run supabase_board_images_storage.sql)');
   }
-  return {
+    return {
     src: uploaded,
-    naturalW: compressed.naturalW,
-    naturalH: compressed.naturalH,
+      naturalW: compressed.naturalW,
+      naturalH: compressed.naturalH,
     uploaded: true,
-  };
+    };
 }
 
 async function createImageObjectAtWorldPoint(dataUrl, naturalW, naturalH, worldX, worldY) {
@@ -6962,20 +7015,20 @@ function initTextToolbar() {
 
   const wrap = document.getElementById('ttb-colors');
   if (wrap && wrap.dataset.toolbarInited !== '1') {
-    wrap.dataset.toolbarInited = '1';
-    TEXT_COLORS.forEach(c => {
-      const s = document.createElement('div');
-      s.className = 'ttb-color-swatch';
-      s.style.background = c;
+  wrap.dataset.toolbarInited = '1';
+  TEXT_COLORS.forEach(c => {
+    const s = document.createElement('div');
+    s.className = 'ttb-color-swatch';
+    s.style.background = c;
       if (c === '#fbfbfb') s.style.border = '2px solid rgba(251,251,251,0.3)';
-      s.title = c;
-      s.addEventListener('mousedown', ev => {
-        ev.preventDefault(); ev.stopPropagation();
-        setTextColor(c);
+    s.title = c;
+    s.addEventListener('mousedown', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      setTextColor(c);
         hideAllTtbMenus();
-      });
-      wrap.appendChild(s);
     });
+    wrap.appendChild(s);
+  });
   }
 
   const hiWrap = document.getElementById('ttb-highlights');
@@ -7170,13 +7223,13 @@ selectObject = function(id, addToSelection) {
   if (selectedIds.size === 1 && obj && selectedIds.has(id)) {
     if (obj.type === 'text') {
       hideStickyToolbar();
-      selectTextNode(id);
+    selectTextNode(id);
     } else if (obj.type === 'sticky') {
       hideTextToolbar();
       const el = document.querySelector(`.sticky-note[data-obj-id="${id}"]`);
       if (el) showStickyToolbar(el, { keepMenus: !!openTtbMenuId });
-    } else {
-      hideTextToolbar();
+  } else {
+    hideTextToolbar();
       hideStickyToolbar();
     }
   } else {
@@ -8478,7 +8531,7 @@ function drawMinimap() {
         mmCtx.moveTo(x1, y1);
         mmCtx.lineTo(x2, y2);
         mmCtx.stroke();
-        const sz = Math.max(3, ws(8));
+          const sz = Math.max(3, ws(8));
         if (shapeLineHasArrowEnd(obj.shapeType)) {
           const angle = Math.atan2(y2 - y1, x2 - x1);
           mmCtx.beginPath();
@@ -10402,7 +10455,7 @@ function selectSticky(id) {
   // use unified selectObject if available
   if (typeof selectObject === 'function') {
     if (!selectedIds.has(id)) {
-      selectObject(id, false);
+    selectObject(id, false);
     } else {
       selectedStickyId = id;
     }
